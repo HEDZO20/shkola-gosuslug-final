@@ -1,0 +1,54 @@
+<!DOCTYPE html><html lang="ru"><head><title>Школа Госуслуг — онлайн-обучение</title><meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="stylesheet" href="style.css" />
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="supabase-config.js"></script>
+<script defer src="app.js"></script></head><body data-page="home"><div class="bg"><span class="orb orb-1"></span><span class="orb orb-2"></span><span class="orb orb-3"></span><span class="grid"></span></div>
+<header class="topbar">
+  <a class="brand" href="index.html"><div class="brand-icon">✦</div><div><strong>Школа Госуслуг</strong><span>Научитесь пользоваться государственными услугами быстро и уверенно</span></div></a>
+  <nav class="nav">
+    <a href="program.html">Программа</a>
+    <a href="course.html">Курс</a>
+    <a href="cabinet.html">Кабинет</a>
+    <a href="certificate.html">Сертификат</a>
+    <span id="userBox"></span>
+  </nav>
+</header>
+<main class="container">
+  <section class="hero">
+    <div>
+      <div class="badge" id="heroBadge">🚀 Полноценная учебная платформа</div>
+      <h1 id="heroHeading">Обучение работе с <span>госуслугами</span></h1>
+      <p id="heroText">Простые видеоуроки, понятные инструкции, практические задания и тесты. Уроки открываются поэтапно после просмотра видео и успешного теста.</p>
+      <div class="hero-actions">
+        <button class="primary" data-start-course data-primary-label>Пройти курс</button>
+        <a class="secondary" href="cabinet.html" data-secondary-label>Личный кабинет</a>
+        <a class="ghost-btn whatsapp-link" target="_blank" rel="noopener">Написать в WhatsApp</a>
+      </div>
+    </div>
+    <aside class="hero-card glass hero-phone">
+      <div class="phone-scene"><div class="person"><div class="head"></div><div class="body-shape"></div></div><div class="phone"><div class="phone-screen"><div class="phone-title">Заявление</div><div class="phone-line"></div><div class="phone-line"></div><div class="phone-line"></div><div class="phone-check">✓ Заявка заполнена</div></div></div></div>
+    </aside>
+  </section>
+
+  <section id="homeAbout"></section>
+  <section id="homeProcess"></section>
+
+  <section class="grid-3">
+    <div class="card"><div class="icon">📚</div><h3>Уроки по порядку</h3><p>Следующий урок откроется только после просмотра видео и успешного теста.</p></div>
+    <div class="card"><div class="icon">📈</div><h3>Личный кабинет</h3><p>Ученик видит прогресс, просмотренные видео, тесты и следующий шаг.</p></div>
+    <div class="card"><div class="icon">🛠️</div><h3>Управление без кода</h3><p>Администратор меняет тексты, уроки, видео, тесты, цвета и настройки прямо в панели управления.</p></div>
+  </section>
+
+  <section class="glass panel">
+    <div class="section-head"><div><h2>Начать обучение</h2><p>Создайте кабинет ученика или войдите, если уже зарегистрированы.</p></div></div>
+    <div id="homeAuthBox"></div>
+  </section>
+
+  <section>
+    <div class="section-head"><div><h2>Программа курса</h2><p>Количество уроков: <b id="lessonsCount">0</b>. Список обновляется из панели управления автоматически.</p></div><a class="secondary" href="program.html">Вся программа</a></div>
+    <div id="lessonPreview" class="grid-3"></div>
+  </section>
+
+  <section id="homeSupport"></section>
+</main><a class="float-whatsapp whatsapp-link" target="_blank" rel="noopener">💬 WhatsApp</a><footer class="footer"></footer></body></html>
