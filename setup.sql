@@ -9,6 +9,9 @@ create table if not exists public.profiles (
   full_name text,
   phone text,
   role text not null default 'student' check (role in ('student','admin')),
+  approval_status text not null default 'pending' check (approval_status in ('pending','approved','blocked')),
+  approved_at timestamptz,
+  approved_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -70,6 +73,26 @@ update public.site_settings
 set hero_title = 'Научитесь пользоваться',
     hero_highlight = 'госуслугами'
 where id = 1 and coalesce(hero_highlight, '') in ('уверенно', 'услугами');
+
+-- Доступ учеников к курсу: после регистрации ученик ждет подтверждения администратора.
+alter table public.profiles add column if not exists approval_status text not null default 'pending';
+alter table public.profiles add column if not exists approved_at timestamptz;
+alter table public.profiles add column if not exists approved_by uuid references auth.users(id) on delete set null;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'profiles_approval_status_check'
+      and conrelid = 'public.profiles'::regclass
+  ) then
+    alter table public.profiles
+    add constraint profiles_approval_status_check
+    check (approval_status in ('pending','approved','blocked'));
+  end if;
+end $$;
+update public.profiles
+set approval_status = 'approved', approved_at = coalesce(approved_at, now())
+where role = 'admin' and approval_status <> 'approved';
 
 create table if not exists public.lessons (
   id uuid primary key default gen_random_uuid(),
@@ -153,12 +176,13 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id, email, full_name, role)
+  insert into public.profiles (id, email, full_name, role, approval_status)
   values (
     new.id,
     new.email,
     coalesce(new.raw_user_meta_data->>'full_name', split_part(new.email, '@', 1)),
-    'student'
+    'student',
+    'pending'
   )
   on conflict (id) do nothing;
   return new;
@@ -183,6 +207,37 @@ as $$
   );
 $$;
 
+create or replace function public.has_course_access()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.profiles
+    where id = auth.uid()
+      and (role = 'admin' or (role = 'student' and approval_status = 'approved'))
+  );
+$$;
+
+create or replace function public.protect_profile_admin_fields()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    new.role := old.role;
+    new.approval_status := old.approval_status;
+    new.approved_at := old.approved_at;
+    new.approved_by := old.approved_by;
+  end if;
+  return new;
+end;
+$$;
+
 create or replace function public.touch_updated_at()
 returns trigger
 language plpgsql
@@ -192,6 +247,10 @@ begin
   return new;
 end;
 $$;
+
+drop trigger if exists protect_profile_admin_fields_trigger on public.profiles;
+create trigger protect_profile_admin_fields_trigger before update on public.profiles
+for each row execute function public.protect_profile_admin_fields();
 
 drop trigger if exists touch_profiles on public.profiles;
 create trigger touch_profiles before update on public.profiles
@@ -229,7 +288,7 @@ drop policy if exists "profiles_select" on public.profiles;
 create policy "profiles_select" on public.profiles for select using (id = auth.uid() or public.is_admin());
 
 drop policy if exists "profiles_insert_self" on public.profiles;
-create policy "profiles_insert_self" on public.profiles for insert with check (id = auth.uid() and role = 'student');
+create policy "profiles_insert_self" on public.profiles for insert with check (id = auth.uid() and role = 'student' and approval_status = 'pending');
 
 drop policy if exists "profiles_update_self_or_admin" on public.profiles;
 drop policy if exists "profiles_update_self" on public.profiles;
@@ -240,7 +299,7 @@ create policy "profiles_update_admin" on public.profiles for update using (publi
 
 -- Уроки: опубликованные видят все авторизованные, админ управляет всеми.
 drop policy if exists "lessons_select" on public.lessons;
-create policy "lessons_select" on public.lessons for select using (is_published = true or public.is_admin());
+create policy "lessons_select" on public.lessons for select using (public.is_admin() or (is_published = true and public.has_course_access()));
 
 drop policy if exists "lessons_admin_insert" on public.lessons;
 create policy "lessons_admin_insert" on public.lessons for insert with check (public.is_admin());
@@ -254,7 +313,7 @@ create policy "lessons_admin_delete" on public.lessons for delete using (public.
 -- Тесты: ученики читают, админы управляют.
 drop policy if exists "quiz_select" on public.quiz_questions;
 create policy "quiz_select" on public.quiz_questions for select using (
-  public.is_admin() or exists (select 1 from public.lessons l where l.id = lesson_id and l.is_published = true)
+  public.is_admin() or (public.has_course_access() and exists (select 1 from public.lessons l where l.id = lesson_id and l.is_published = true))
 );
 
 drop policy if exists "quiz_admin_insert" on public.quiz_questions;
@@ -271,15 +330,15 @@ drop policy if exists "progress_select" on public.lesson_progress;
 create policy "progress_select" on public.lesson_progress for select using (user_id = auth.uid() or public.is_admin());
 
 drop policy if exists "progress_insert_self" on public.lesson_progress;
-create policy "progress_insert_self" on public.lesson_progress for insert with check (user_id = auth.uid());
+create policy "progress_insert_self" on public.lesson_progress for insert with check (user_id = auth.uid() and public.has_course_access());
 
 drop policy if exists "progress_update_self" on public.lesson_progress;
-create policy "progress_update_self" on public.lesson_progress for update using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy "progress_update_self" on public.lesson_progress for update using (user_id = auth.uid() and public.has_course_access()) with check (user_id = auth.uid() and public.has_course_access());
 
 
 -- Материалы: опубликованные видят авторизованные, админ управляет всеми.
 drop policy if exists "materials_select" on public.materials;
-create policy "materials_select" on public.materials for select using (is_published = true or public.is_admin());
+create policy "materials_select" on public.materials for select using (public.is_admin() or (is_published = true and public.has_course_access()));
 
 drop policy if exists "materials_admin_insert" on public.materials;
 create policy "materials_admin_insert" on public.materials for insert with check (public.is_admin());

@@ -14,6 +14,10 @@
   function loadTestProgress(){ try{return JSON.parse(sessionStorage.getItem('sg_test_progress')||'[]');}catch(e){return [];} }
   function saveTestProgress(){ sessionStorage.setItem('sg_test_progress', JSON.stringify(state.progress||[])); }
   function lessonStatusLabel(lesson){ return lesson?.is_published ? 'Опубликован' : 'Черновик / скрыт'; }
+  function approvalStatus(profile=state.profile){ return profile?.approval_status || (profile?.role === 'admin' ? 'approved' : 'pending'); }
+  function hasCourseAccess(profile=state.profile){ return profile?.role === 'admin' || approvalStatus(profile) === 'approved'; }
+  function approvalText(profile=state.profile){ const st=approvalStatus(profile); if(st==='approved') return 'Подтвержден'; if(st==='blocked') return 'Отклонен / заблокирован'; return 'Ожидает подтверждения'; }
+  function approvalClass(profile=state.profile){ const st=approvalStatus(profile); if(st==='approved') return 'done'; if(st==='blocked') return 'lock'; return 'pending'; }
 
   function msg(text, type='notice') { return `<div class="notice ${type}">${text}</div>`; }
   function esc(s=''){return String(s ?? '').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
@@ -119,7 +123,7 @@
       state.materials = demoMaterials();
       state.progress = [{user_id:'demo-user', lesson_id:'demo-1', video_watched:true, quiz_score:100, completed:true, completed_at:new Date().toISOString(), updated_at:new Date().toISOString()}];
       state.user = {id:'demo-user', email:'demo@example.com'};
-      state.profile = {id:'demo-user', email:'demo@example.com', full_name:'Демо-ученик', role:'student'};
+      state.profile = {id:'demo-user', email:'demo@example.com', full_name:'Демо-ученик', role:'student', approval_status:'approved'};
       hydrateBrand(); setWhatsAppLinks(); bindCommon(); initDemoPage(); return;
     }
     const { data } = await sb.auth.getSession();
@@ -177,7 +181,7 @@
     if(!state.user) return null;
     let { data } = await sb.from('profiles').select('*').eq('id',state.user.id).maybeSingle();
     if(!data){
-      const payload = {id:state.user.id,email:state.user.email,full_name:state.user.user_metadata?.full_name || state.user.email?.split('@')[0] || 'Ученик', role:'student'};
+      const payload = {id:state.user.id,email:state.user.email,full_name:state.user.user_metadata?.full_name || state.user.email?.split('@')[0] || 'Ученик', role:'student', approval_status:'pending'};
       await sb.from('profiles').insert(payload);
       data = payload;
     }
@@ -317,7 +321,9 @@
         if(!sb) { location.href='course.html'; return; }
         if(!state.user) return showAuthModal('signup');
         if(!state.profile) await loadProfile();
-        location.href = state.profile?.role === 'admin' ? 'admin.html' : 'course.html';
+        if(state.profile?.role === 'admin') location.href = 'admin.html';
+        else if(!hasCourseAccess()) location.href = 'cabinet.html';
+        else location.href = 'course.html';
         return;
       }
       const modal = $('#authModal');
@@ -420,14 +426,15 @@
           }
           state.user = res.data.user; await loadProfile();
           if(name) await sb.from('profiles').update({full_name:name}).eq('id',state.user.id);
-          location.href = new URLSearchParams(location.search).get('next') || 'course.html';
+          location.href = 'cabinet.html';
         } else {
           res = await sb.auth.signInWithPassword({email,password});
           if(res.error) return renderAuth(root, 'signin', msg('Не удалось войти. Проверьте email, пароль и подтверждение почты. Если забыли пароль — нажмите «Забыли пароль?».', 'error'));
           state.user = res.data.user; await loadProfile();
           const nextParam = new URLSearchParams(location.search).get('next');
           if(state.profile?.role === 'admin' && (!nextParam || nextParam === 'cabinet.html' || nextParam === 'course.html')) location.href = 'admin.html';
-          else location.href = nextParam || (state.profile?.role === 'admin' ? 'admin.html' : 'course.html');
+          else if(state.profile?.role !== 'admin' && !hasCourseAccess() && (!nextParam || ['course.html','lesson.html','materials.html','complete.html'].some(x=>nextParam.includes(x)))) location.href = 'cabinet.html';
+          else location.href = nextParam || (state.profile?.role === 'admin' ? 'admin.html' : (hasCourseAccess() ? 'course.html' : 'cabinet.html'));
         }
       } catch(err){
         renderAuth(root, signup?'signup':'signin', msg('Ошибка соединения. Проверьте интернет, Supabase URL и ключ.', 'error'));
@@ -442,7 +449,7 @@
   async function initHome(){
     const authPlace = $('#homeAuthBox');
     if(authPlace && !state.user) renderAuth(authPlace,'signup');
-    if(authPlace && state.user) authPlace.innerHTML = `<div class="notice">Вы вошли как <b>${esc(state.profile?.full_name || state.user.email)}</b>.</div><div class="auth-actions"><a class="primary" href="${state.profile?.role === 'admin' ? 'admin.html' : 'course.html'}">${state.profile?.role === 'admin' ? 'Открыть панель управления' : 'Продолжить курс'}</a></div>`;
+    if(authPlace && state.user) authPlace.innerHTML = `<div class="notice">Вы вошли как <b>${esc(state.profile?.full_name || state.user.email)}</b>.<br><span class="hint">Статус: ${esc(approvalText())}</span></div><div class="auth-actions"><a class="primary" href="${state.profile?.role === 'admin' ? 'admin.html' : (hasCourseAccess() ? 'course.html' : 'cabinet.html')}">${state.profile?.role === 'admin' ? 'Открыть панель управления' : (hasCourseAccess() ? 'Продолжить курс' : 'Проверить статус')}</a></div>`;
     await loadLessons(); await loadMaterials();
     const count = $('#lessonsCount'); if(count) count.textContent = String(state.lessons.length || 0);
     renderLessonPreview(); renderHomeSections(); hydrateBrand();
@@ -465,7 +472,7 @@
     root.innerHTML = (state.materials||[]).slice(0,6).map(materialCardHtml).join('') || `<div class="empty">Материалы появятся после добавления в панели управления.</div>`;
   }
   async function initMaterials(){
-    if(!await requireStudent()) return;
+    if(!await requireApprovedStudent('#materialsRoot')) return;
     await loadLessons(); await loadMaterials(); renderMaterialsPage();
   }
   function renderMaterialsPage(){
@@ -481,10 +488,26 @@
     if(!state.user){ redirectLogin(); return false; }
     await loadProfile(); return true;
   }
+  function renderApprovalPending(targetSelector){
+    const root = $(targetSelector) || $('main.container') || document.body;
+    const blocked = approvalStatus() === 'blocked';
+    const text = blocked
+      ? 'Доступ к обучению пока закрыт. Свяжитесь с администратором, чтобы уточнить причину.'
+      : 'Ваша заявка на обучение отправлена. Администратор проверит регистрацию и откроет доступ к урокам.';
+    root.innerHTML = `<section class="approval-card glass panel"><div class="approval-icon">${blocked?'⛔':'⏳'}</div><h1>${blocked?'Доступ не открыт':'Ожидает подтверждения'}</h1><p>${esc(text)}</p><div class="approval-status-row"><span class="status ${approvalClass()}">${esc(approvalText())}</span><span>${esc(state.profile?.email || state.user?.email || '')}</span></div><div class="auth-actions"><a class="secondary" href="cabinet.html">Открыть кабинет</a><a class="ghost-btn whatsapp-link" target="_blank" href="${whatsappUrl('Здравствуйте! Я зарегистрировался на курс и ожидаю подтверждения доступа.')}">Написать в WhatsApp</a></div></section>`;
+    setWhatsAppLinks();
+  }
+  async function requireApprovedStudent(targetSelector){
+    if(!await requireStudent()) return false;
+    if(state.profile?.role === 'admin') return true;
+    if(!hasCourseAccess()){ renderApprovalPending(targetSelector); return false; }
+    return true;
+  }
   async function initCourse(){
     if(!await requireStudent()) return;
     const test = isTestMode() && state.profile?.role === 'admin';
     if(state.profile?.role==='admin' && !test){ location.replace('admin.html'); return; }
+    if(!test && !hasCourseAccess()){ renderApprovalPending('#courseList'); const side=$('#courseSide'); if(side) side.innerHTML=''; return; }
     await loadLessons(test); await loadMaterials(test);
     await trackEvent('course_open',{});
     if(test) state.progress = loadTestProgress(); else await loadProgress();
@@ -517,6 +540,7 @@
     if(!await requireStudent()) return;
     const test = isTestMode() && state.profile?.role === 'admin';
     if(state.profile?.role==='admin' && !test){ location.replace('admin.html'); return; }
+    if(!test && !hasCourseAccess()){ renderApprovalPending('#lessonRoot'); return; }
     await loadLessons(test); if(test) state.progress = loadTestProgress(); else await loadProgress();
     const id=getQuery('id'); const idx=state.lessons.findIndex(l=>l.id===id); const lesson=state.lessons[idx];
     if(!lesson) return $('#lessonRoot').innerHTML = msg('Урок не найден или пока скрыт.', 'error');
@@ -583,7 +607,13 @@
     if(error) alert(error.message);
   }
 
-  async function initCabinet(){ if(!await requireStudent()) return; if(state.profile?.role === 'admin'){ location.replace('admin.html'); return; } await loadLessons(); await loadProgress(); await trackEvent('cabinet_open',{}); renderCabinet(); }
+  async function initCabinet(){ if(!await requireStudent()) return; if(state.profile?.role === 'admin'){ location.replace('admin.html'); return; } if(!hasCourseAccess()){ await trackEvent('cabinet_pending',{}); renderPendingCabinet(); return; } await loadLessons(); await loadProgress(); await trackEvent('cabinet_open',{}); renderCabinet(); }
+  function renderPendingCabinet(){
+    const root=$('#cabinetRoot'); if(!root) return;
+    const blocked = approvalStatus() === 'blocked';
+    root.innerHTML = `<div class="page-title"><h1>Личный кабинет</h1><p>Здравствуйте, ${esc(state.profile?.full_name || state.user.email)}.</p></div><section class="approval-card glass panel"><div class="approval-icon">${blocked?'⛔':'⏳'}</div><h2>${blocked?'Доступ к курсу пока закрыт':'Заявка ожидает подтверждения'}</h2><p>${blocked?'Администратор пока не открыл вам доступ к урокам. Напишите в WhatsApp, если считаете, что это ошибка.':'Вы успешно зарегистрировались. Уроки откроются после подтверждения администратором.'}</p><div class="approval-status-row"><span class="status ${approvalClass()}">${esc(approvalText())}</span><span>${esc(state.profile?.email || '')}</span></div><div class="notice small">После подтверждения в этом кабинете появятся уроки, прогресс, материалы и кнопка продолжения курса.</div><div class="auth-actions"><a class="ghost-btn whatsapp-link" target="_blank" href="${whatsappUrl('Здравствуйте! Я зарегистрировался на курс и ожидаю подтверждения доступа.')}">Написать в WhatsApp</a><button class="secondary" onclick="location.reload()">Обновить статус</button></div></section>`;
+    setWhatsAppLinks();
+  }
   function renderCabinet(){
     const root=$('#cabinetRoot'); if(!root) return;
     const sum=courseSummary();
@@ -602,7 +632,7 @@
   }
 
   async function initCertificate(){ location.replace('complete.html'); }
-  async function initComplete(){ if(!await requireStudent()) return; if(state.profile?.role === 'admin' && !isTestMode()){ location.replace('admin.html'); return; } await loadLessons(); if(isTestMode()) state.progress = loadTestProgress(); else await loadProgress(); renderComplete(); }
+  async function initComplete(){ if(!await requireStudent()) return; if(state.profile?.role === 'admin' && !isTestMode()){ location.replace('admin.html'); return; } if(!isTestMode() && !hasCourseAccess()){ renderApprovalPending('#completeRoot'); return; } await loadLessons(); if(isTestMode()) state.progress = loadTestProgress(); else await loadProgress(); renderComplete(); }
   function renderComplete(){
     const root=$('#completeRoot') || $('#certificateRoot'); if(!root) return; const sum=courseSummary();
     const done = sum.done >= sum.total && sum.total > 0;
@@ -628,13 +658,13 @@
     renderAdminOverview(); await renderAdminLessons(); renderAdminFiles(); renderAdminMaterials(); renderAdminStudents(); renderAdminProblems(); renderAdminActivity(); renderAdminBackup(); renderAdminHelp(); renderAdminSettings();
   }
   function renderAdminOverview(){
-    const root=$('#tab-overview'); if(!root) return; const students=(state.allProfiles||[]).filter(p=>p.role!=='admin'); const completedStudents=students.filter(st=>state.lessons.length && state.lessons.every(l=>state.allProgress.some(p=>p.user_id===st.id && p.lesson_id===l.id && p.completed))).length;
+    const root=$('#tab-overview'); if(!root) return; const students=(state.allProfiles||[]).filter(p=>p.role!=='admin'); const pendingStudents=students.filter(st=>approvalStatus(st)==='pending').length; const completedStudents=students.filter(st=>state.lessons.length && state.lessons.every(l=>state.allProgress.some(p=>p.user_id===st.id && p.lesson_id===l.id && p.completed))).length;
     const active = students.filter(st=>state.allProgress.some(p=>p.user_id===st.id)).length;
     const events = state.events || [];
     const pageViews = events.filter(e=>e.action==='page_view').length;
     const uploads = events.filter(e=>e.action==='file_upload' || e.action==='lesson_video_upload').length;
     const stuck = students.filter(st=>{ const pr=state.allProgress.filter(p=>p.user_id===st.id); return pr.length && !state.lessons.every(l=>pr.some(p=>p.lesson_id===l.id && p.completed)); }).length;
-    root.innerHTML = `<div class="section-head"><div><h2>Обзор платформы</h2><p>Краткая статистика по урокам, ученикам и активности.</p></div><div class="admin-actions"><button class="secondary" id="refreshOverview">Обновить</button><button class="primary" id="openTestModeBtn">Открыть курс в тестовом режиме</button></div></div><div class="metric-grid"><div class="metric"><b>${students.length}</b><span>учеников</span></div><div class="metric"><b>${active}</b><span>начали курс</span></div><div class="metric"><b>${completedStudents}</b><span>завершили</span></div><div class="metric"><b>${state.lessons.length}</b><span>уроков</span></div><div class="metric"><b>${pageViews}</b><span>просмотров страниц</span></div><div class="metric"><b>${uploads}</b><span>загрузок файлов</span></div></div><section class="grid-2 admin-overview-grid"><div class="glass-lite"><h3>Где ученики могут застрять</h3><p class="big-number">${stuck}</p><p class="hint">учеников начали курс, но еще не завершили все уроки.</p></div><div class="glass-lite"><h3>Последняя активность</h3><div class="mini-list compact">${events.slice(0,8).map(e=>`<div class="mini-item"><span>${esc(e.action)} · ${esc(e.page||'')}</span><small>${new Date(e.created_at).toLocaleString('ru-RU')}</small></div>`).join('') || '<div class="empty">Активности пока нет</div>'}</div></div></section>`;
+    root.innerHTML = `<div class="section-head"><div><h2>Обзор платформы</h2><p>Краткая статистика по урокам, ученикам и активности.</p></div><div class="admin-actions"><button class="secondary" id="refreshOverview">Обновить</button><button class="primary" id="openTestModeBtn">Открыть курс в тестовом режиме</button></div></div><div class="metric-grid"><div class="metric"><b>${students.length}</b><span>учеников</span></div><div class="metric"><b>${pendingStudents}</b><span>ожидают доступа</span></div><div class="metric"><b>${active}</b><span>начали курс</span></div><div class="metric"><b>${completedStudents}</b><span>завершили</span></div><div class="metric"><b>${state.lessons.length}</b><span>уроков</span></div><div class="metric"><b>${pageViews}</b><span>просмотров страниц</span></div></div><section class="grid-2 admin-overview-grid"><div class="glass-lite"><h3>Где ученики могут застрять</h3><p class="big-number">${stuck}</p><p class="hint">учеников начали курс, но еще не завершили все уроки.</p></div><div class="glass-lite"><h3>Последняя активность</h3><div class="mini-list compact">${events.slice(0,8).map(e=>`<div class="mini-item"><span>${esc(e.action)} · ${esc(e.page||'')}</span><small>${new Date(e.created_at).toLocaleString('ru-RU')}</small></div>`).join('') || '<div class="empty">Активности пока нет</div>'}</div></div></section>`;
     $('#refreshOverview').onclick=async()=>{await loadProgressAll();renderAdminOverview();renderAdminStudents();renderAdminProblems();};
     $('#openTestModeBtn').onclick=()=>{ enableTestMode(); location.href='course.html?test=1'; }; 
   }
@@ -739,6 +769,65 @@
     }
   }
 
+
+  function storagePathFromUrl(url){
+    const value = String(url || '');
+    const marker = '/storage/v1/object/public/lesson-files/';
+    if(!value.includes(marker)) return '';
+    try { return decodeURIComponent(value.split(marker)[1].split('?')[0]); } catch(e){ return value.split(marker)[1].split('?')[0]; }
+  }
+  function storagePublicUrl(path){
+    if(!sb || !path) return '';
+    try { return sb.storage.from('lesson-files').getPublicUrl(path).data.publicUrl || ''; } catch(e){ return ''; }
+  }
+  function lessonsUsingFile(path){
+    const publicUrl = storagePublicUrl(path);
+    return (state.lessons || []).filter(l => {
+      const url = String(l.video_url || '');
+      return url && (url === publicUrl || storagePathFromUrl(url) === path);
+    });
+  }
+  function materialsUsingFile(path){
+    const publicUrl = storagePublicUrl(path);
+    return (state.materials || []).filter(m => {
+      const url = String(m.file_url || '');
+      return m.file_path === path || storagePathFromUrl(url) === path || (publicUrl && url === publicUrl);
+    });
+  }
+  async function deleteUploadedFile(path){
+    if(!sb){ alert('Supabase не подключен.'); return false; }
+    path = String(path || '').trim();
+    if(!path){ alert('Не найден путь файла.'); return false; }
+    const linkedMaterials = materialsUsingFile(path);
+    const linkedLessons = lessonsUsingFile(path);
+    let confirmText = `Удалить файл из хранилища?\n\n${path}`;
+    if(linkedMaterials.length) confirmText += `\n\nТакже будут удалены материалы из библиотеки: ${linkedMaterials.length}.`;
+    if(linkedLessons.length) confirmText += `\n\nФайл используется в уроках:\n— ${linkedLessons.map(l=>l.title).join('\n— ')}`;
+    if(!confirmAction(confirmText)) return false;
+
+    if(linkedMaterials.length){
+      const ids = linkedMaterials.map(m=>m.id).filter(Boolean);
+      if(ids.length){
+        const matRes = await sb.from('materials').delete().in('id', ids);
+        if(matRes.error){ alert('Материалы не удалились: ' + matRes.error.message); return false; }
+      }
+    }
+
+    if(linkedLessons.length && confirmAction('Очистить ссылку на это видео в уроках, где оно используется?')){
+      for(const lesson of linkedLessons){
+        const res = await sb.from('lessons').update({video_url:'', video_type:'none'}).eq('id', lesson.id);
+        if(res.error){ alert('Не удалось очистить видео в уроке: ' + res.error.message); return false; }
+      }
+    }
+
+    const {error} = await sb.storage.from('lesson-files').remove([path]);
+    if(error){ alert('Файл не удалился: ' + error.message); return false; }
+    await trackEvent('file_delete', {path, materials: linkedMaterials.length, lessons: linkedLessons.length});
+    await loadLessons(true);
+    await loadMaterials(true);
+    return true;
+  }
+
   function renderAdminFiles(){
     const root=$('#tab-files'); if(!root) return;
     root.innerHTML = `<div class="section-head"><div><h2>Видео и файлы</h2><p>Загрузите MP4, WEBM, PDF или картинку. Ссылку можно вставить в урок.</p></div><button class="secondary" id="listFilesBtn">Показать файлы</button></div><div class="notice"><b>Совет:</b> для видео лучше MP4 до 300–500 МБ, 720p или 1080p. Очень большие файлы могут долго загружаться и тормозить у учеников.</div><div class="file-upload"><form id="fileForm" class="form"><label>Выберите файл<input type="file" name="file" required accept="video/*,application/pdf,image/*"></label><button class="primary" type="submit" id="fileUploadBtn">Загрузить файл</button></form><div id="fileResult"></div><div id="fileList"></div></div>`;
@@ -768,6 +857,7 @@
   }
   async function listFiles(){
     const root=$('#fileList'); if(!root) return;
+    if(!sb){ root.innerHTML=msg('Supabase не подключен.','warning'); return; }
     root.innerHTML=msg('Загружаем список файлов...');
     const dirs=['videos','images','docs'];
     const files=[];
@@ -776,14 +866,15 @@
       if(error){ root.innerHTML=msg(error.message,'error'); return; }
       (data||[]).forEach(f=>files.push({...f,path:`${dir}/${f.name}`}));
     }
-    root.innerHTML = `<div class="mini-list">${files.map(f=>{const url=sb.storage.from('lesson-files').getPublicUrl(f.path).data.publicUrl; return `<div class="mini-item file-mini"><div><b>${esc(f.path)}</b><small>${prettyBytes(f.metadata?.size||0)}</small></div><input value="${esc(url)}" onclick="this.select()"><button class="danger small" data-delete-file="${esc(f.path)}">Удалить</button></div>`}).join('') || '<div class="empty">Файлов пока нет</div>'}</div>`;
+    if(!files.length){ root.innerHTML='<div class="empty">Файлов пока нет</div>'; return; }
+    root.innerHTML = `<div class="notice small"><b>Удаление файлов:</b> если файл привязан к материалу, запись материала тоже удалится. Если видео используется в уроке, сайт предложит очистить ссылку в уроке.</div><div class="mini-list">${files.map(f=>{const url=storagePublicUrl(f.path); const usedLessons=lessonsUsingFile(f.path).length; const usedMaterials=materialsUsingFile(f.path).length; return `<div class="mini-item file-mini"><div><b>${esc(f.path)}</b><small>${prettyBytes(f.metadata?.size||0)}${usedLessons?` · уроков: ${usedLessons}`:''}${usedMaterials?` · материалов: ${usedMaterials}`:''}</small></div><input value="${esc(url)}" onclick="this.select()"><button class="danger small" data-delete-file="${esc(f.path)}">Удалить файл</button></div>`}).join('')}</div>`;
     $$('[data-delete-file]',root).forEach(btn=>btn.onclick=async()=>{
       const path=btn.dataset.deleteFile;
-      if(!confirmAction(`Удалить файл ${path}? Если он используется в уроке, видео перестанет открываться.`)) return;
-      const {error}=await sb.storage.from('lesson-files').remove([path]);
-      if(error) return alert(error.message);
-      await trackEvent('file_delete',{path});
-      await listFiles();
+      btn.disabled=true;
+      btn.textContent='Удаляем...';
+      const ok = await deleteUploadedFile(path);
+      if(ok) await listFiles();
+      else { btn.disabled=false; btn.textContent='Удалить файл'; }
     });
   }
 
@@ -797,9 +888,27 @@
   }
   function renderMaterialsAdminList(){
     const list=$('#materialsAdminList'); if(!list) return;
-    list.innerHTML = (state.materials||[]).map(m=>{ const lesson=state.lessons.find(l=>l.id===m.lesson_id); return `<div class="mini-item file-mini"><div><b>${materialIcon(m)} ${esc(m.title)}</b><small>${lesson?`Урок: ${esc(lesson.title)} · `:''}${m.is_published?'Опубликован':'Скрыт'}</small><p class="hint">${esc(m.description||'')}</p></div><div class="admin-actions"><a class="secondary small" href="${esc(m.file_url||'#')}" target="_blank">Открыть</a><button class="danger small" data-delete-material="${m.id}">Удалить</button></div></div>`; }).join('') || '<div class="empty">Материалов пока нет</div>';
-    $$('[data-delete-material]', list).forEach(btn=>btn.onclick=async()=>{ if(!confirmAction('Удалить материал из библиотеки? Файл в Storage останется, но запись исчезнет.')) return; const {error}=await sb.from('materials').delete().eq('id',btn.dataset.deleteMaterial); if(error) return alert(error.message); await trackEvent('material_delete',{id:btn.dataset.deleteMaterial}); await loadMaterials(true); renderMaterialsAdminList(); });
+    list.innerHTML = (state.materials||[]).map(m=>{ const lesson=state.lessons.find(l=>l.id===m.lesson_id); const path=m.file_path || storagePathFromUrl(m.file_url); return `<div class="mini-item file-mini"><div><b>${materialIcon(m)} ${esc(m.title)}</b><small>${lesson?`Урок: ${esc(lesson.title)} · `:''}${m.is_published?'Опубликован':'Скрыт'}${path?` · ${esc(path)}`:''}</small><p class="hint">${esc(m.description||'')}</p></div><div class="admin-actions"><a class="secondary small" href="${esc(m.file_url||'#')}" target="_blank">Открыть</a><button class="danger small" data-delete-material="${m.id}">Удалить</button></div></div>`; }).join('') || '<div class="empty">Материалов пока нет</div>';
+    $$('[data-delete-material]', list).forEach(btn=>btn.onclick=async()=>{
+      const material = (state.materials||[]).find(m=>String(m.id)===String(btn.dataset.deleteMaterial));
+      if(!material) return;
+      const path = material.file_path || storagePathFromUrl(material.file_url);
+      if(path){
+        if(!confirmAction(`Удалить материал «${material.title}» и сам файл из хранилища?`)) return;
+        btn.disabled=true; btn.textContent='Удаляем...';
+        const ok = await deleteUploadedFile(path);
+        if(ok){ await loadMaterials(true); renderMaterialsAdminList(); }
+        else { btn.disabled=false; btn.textContent='Удалить'; }
+      } else {
+        if(!confirmAction(`Удалить материал «${material.title}» из библиотеки?`)) return;
+        const {error}=await sb.from('materials').delete().eq('id',material.id);
+        if(error) return alert(error.message);
+        await trackEvent('material_delete',{id:material.id,title:material.title});
+        await loadMaterials(true); renderMaterialsAdminList();
+      }
+    });
   }
+
   async function saveMaterial(e){
     e.preventDefault(); const form=e.currentTarget; const fd=new FormData(form); const file=fd.get('file'); const result=$('#materialResult'); const btn=$('#materialSaveBtn');
     if(!file || !file.name){ result.innerHTML=msg('Выберите файл.','warning'); return; }
@@ -822,7 +931,7 @@
   function renderAdminActivity(){
     const root=$('#tab-activity'); if(!root) return;
     const profilesById=Object.fromEntries((state.allProfiles||[]).map(p=>[p.id,p]));
-    const names={page_view:'Просмотр страницы',course_open:'Открыл курс',lesson_open:'Открыл урок',video_watched:'Отметил видео',practice_done:'Выполнил практику',quiz_submit:'Прошел тест',cabinet_open:'Открыл кабинет',file_upload:'Загрузил файл',material_upload:'Добавил материал',lesson_save:'Сохранил урок'};
+    const names={page_view:'Просмотр страницы',cabinet_pending:'Ожидает подтверждения',student_approval_update:'Обновлен доступ ученика',course_open:'Открыл курс',lesson_open:'Открыл урок',video_watched:'Отметил видео',practice_done:'Выполнил практику',quiz_submit:'Прошел тест',cabinet_open:'Открыл кабинет',file_upload:'Загрузил файл',material_upload:'Добавил материал',lesson_save:'Сохранил урок',file_delete:'Удалил файл',material_delete:'Удалил материал'};
     root.innerHTML = `<div class="section-head"><div><h2>История активности</h2><p>Последние действия учеников и администратора: входы, уроки, видео, практика, тесты и загрузки.</p></div><button class="secondary" id="refreshActivityBtn">Обновить</button></div><div class="activity-feed">${(state.events||[]).slice(0,120).map(e=>{ const pr=profilesById[e.user_id]||{}; const meta=e.metadata||{}; return `<div class="activity-item"><div><b>${esc(names[e.action]||e.action)}</b><p>${esc(pr.full_name||pr.email||'Гость')} ${meta.title?'· '+esc(meta.title):''}${meta.score!=null?' · '+meta.score+'%':''}</p></div><small>${new Date(e.created_at).toLocaleString('ru-RU')}</small></div>`; }).join('') || '<div class="empty">Активности пока нет</div>'}</div>`;
     $('#refreshActivityBtn').onclick=async()=>{await loadProgressAll(); renderAdminActivity(); renderAdminOverview();};
   }
@@ -834,12 +943,33 @@
     const next=state.lessons.find(l=>!pr.some(x=>x.lesson_id===l.id && x.completed));
     return {pr,completed,score,next,last:pr[0]?.updated_at?new Date(pr[0].updated_at).toLocaleString('ru-RU'):'—'};
   }
-  function studentRowHtml(p, full=true){ const st=studentStats(p); return `<tr><td>${esc(p.full_name||p.email)}</td><td>${esc(p.email||'')}</td><td>${st.completed}/${state.lessons.length}</td><td>${st.next?esc(st.next.title):'Курс завершен'}</td>${full?`<td>${st.score}%</td><td>${st.last}</td>`:''}</tr>`; }
+  function studentRowHtml(p, full=true){
+    const st=studentStats(p);
+    const status = approvalStatus(p);
+    const statusHtml = `<span class="status ${approvalClass(p)}">${esc(approvalText(p))}</span>`;
+    const actions = p.role === 'admin' ? '' : `<div class="admin-actions compact-actions">${status!=='approved'?`<button class="success small" data-approve-student="${p.id}">Одобрить</button>`:''}${status!=='blocked'?`<button class="danger small" data-block-student="${p.id}">Закрыть</button>`:''}${status!=='pending'?`<button class="secondary small" data-pending-student="${p.id}">В ожидание</button>`:''}</div>`;
+    return `<tr><td>${esc(p.full_name||p.email)}</td><td>${esc(p.email||'')}</td><td>${statusHtml}</td><td>${st.completed}/${state.lessons.length}</td><td>${st.next?esc(st.next.title):'Курс завершен'}</td>${full?`<td>${st.score}%</td><td>${st.last}</td><td>${actions}</td>`:''}</tr>`;
+  }
+  async function setStudentApproval(id, status){
+    const payload={approval_status:status};
+    if(status==='approved'){ payload.approved_at=new Date().toISOString(); payload.approved_by=state.user.id; }
+    if(status!=='approved'){ payload.approved_at=null; payload.approved_by=null; }
+    const {error}=await sb.from('profiles').update(payload).eq('id',id).neq('role','admin');
+    if(error){ alert(error.message); return; }
+    await trackEvent('student_approval_update',{student_id:id,status});
+    await loadProgressAll(); renderAdminStudents(); renderAdminOverview(); renderAdminProblems();
+  }
+  function bindStudentApprovalButtons(root){
+    $$('[data-approve-student]',root).forEach(btn=>btn.onclick=()=>setStudentApproval(btn.dataset.approveStudent,'approved'));
+    $$('[data-block-student]',root).forEach(btn=>btn.onclick=()=>{ if(confirmAction('Закрыть этому ученику доступ к урокам?')) setStudentApproval(btn.dataset.blockStudent,'blocked'); });
+    $$('[data-pending-student]',root).forEach(btn=>btn.onclick=()=>setStudentApproval(btn.dataset.pendingStudent,'pending'));
+  }
   function renderAdminStudents(){
     const root=$('#tab-students'); if(!root) return;
     const rows=(state.allProfiles||[]).filter(p=>p.role!=='admin').map(p=>studentRowHtml(p,true)).join('');
-    root.innerHTML = `<div class="section-head"><div><h2>Ученики</h2><p>Видно, кто проходит курс и где остановился.</p></div><button class="secondary" id="refreshStudents">Обновить</button></div><table class="table"><thead><tr><th>Ученик</th><th>Email</th><th>Прогресс</th><th>Где находится</th><th>Средний тест</th><th>Последняя активность</th></tr></thead><tbody>${rows || '<tr><td colspan="6">Учеников пока нет</td></tr>'}</tbody></table>`;
+    root.innerHTML = `<div class="section-head"><div><h2>Ученики и доступ</h2><p>Новый ученик после регистрации попадает в ожидание. Нажмите «Одобрить», чтобы открыть ему уроки и материалы.</p></div><button class="secondary" id="refreshStudents">Обновить</button></div><table class="table"><thead><tr><th>Ученик</th><th>Email</th><th>Доступ</th><th>Прогресс</th><th>Где находится</th><th>Средний тест</th><th>Последняя активность</th><th>Действия</th></tr></thead><tbody>${rows || '<tr><td colspan="8">Учеников пока нет</td></tr>'}</tbody></table>`;
     $('#refreshStudents').onclick=async()=>{await loadProgressAll();renderAdminStudents();renderAdminOverview();renderAdminProblems();};
+    bindStudentApprovalButtons(root);
   }
 
   function studentProblemData(){
@@ -855,7 +985,9 @@
       const inactive=last ? (now-new Date(last).getTime())/86400000 > inactiveDays : false;
       const next=state.lessons.find((l,i)=> i===0 || pr.some(p=>p.lesson_id===state.lessons[i-1]?.id && p.completed));
       let type='ok', note='Активность нормальная';
-      if(!pr.length){ type='not-started'; note='Еще не начал курс'; }
+      if(approvalStatus(st)==='pending'){ type='pending'; note='Ожидает подтверждения доступа'; }
+      else if(approvalStatus(st)==='blocked'){ type='blocked'; note='Доступ закрыт администратором'; }
+      else if(!pr.length){ type='not-started'; note='Еще не начал курс'; }
       else if(failed.length){ type='failed'; note='Не прошел тест: '+(failed[0].lessons?.title || state.lessons.find(l=>l.id===failed[0].lesson_id)?.title || 'урок'); }
       else if(inactive){ type='inactive'; note='Нет активности больше 7 дней'; }
       else if(completed < state.lessons.length){ type='stuck'; note='Остановился на курсе. Следующий шаг: '+(next?.title || 'продолжить'); }
@@ -866,14 +998,17 @@
     const root=$('#tab-problems'); if(!root) return;
     const data=studentProblemData();
     const groups={
+      'pending':'Ожидают подтверждения',
+      'blocked':'Доступ закрыт',
       'not-started':'Не начали курс',
       'failed':'Не прошли тест',
       'inactive':'Давно не заходили',
       'stuck':'Остановились на уроке'
     };
-    const cards=Object.entries(groups).map(([key,title])=>{ const items=data.filter(x=>x.type===key); return `<div class="glass-lite problem-card"><h3>${esc(title)}</h3><p class="big-number">${items.length}</p><div class="mini-list compact">${items.slice(0,8).map(x=>`<div class="mini-item"><span>${esc(x.student.full_name||x.student.email)}<br><small>${esc(x.note)}</small></span><small>${x.progress}/${x.total}</small></div>`).join('') || '<div class="empty">Нет учеников</div>'}</div></div>`; }).join('');
-    root.innerHTML=`<div class="section-head"><div><h2>Проблемы учеников</h2><p>Здесь видно, кому может понадобиться помощь: кто не начал курс, не прошел тест, давно не заходил или остановился на уроке.</p></div><button class="secondary" id="refreshProblems">Обновить</button></div><div class="grid-2">${cards}</div>`;
+    const cards=Object.entries(groups).map(([key,title])=>{ const items=data.filter(x=>x.type===key); return `<div class="glass-lite problem-card"><h3>${esc(title)}</h3><p class="big-number">${items.length}</p><div class="mini-list compact">${items.slice(0,8).map(x=>`<div class="mini-item"><span>${esc(x.student.full_name||x.student.email)}<br><small>${esc(x.note)}</small></span><div class="compact-actions">${x.type==='pending'?`<button class="success small" data-approve-student="${x.student.id}">Одобрить</button>`:`<small>${x.progress}/${x.total}</small>`}</div></div>`).join('') || '<div class="empty">Нет учеников</div>'}</div></div>`; }).join('');
+    root.innerHTML=`<div class="section-head"><div><h2>Проблемы учеников</h2><p>Здесь видно, кому может понадобиться помощь: кто ждет подтверждения, не начал курс, не прошел тест, давно не заходил или остановился на уроке.</p></div><button class="secondary" id="refreshProblems">Обновить</button></div><div class="grid-2">${cards}</div>`;
     $('#refreshProblems').onclick=async()=>{ await loadProgressAll(); renderAdminProblems(); renderAdminStudents(); renderAdminOverview(); };
+    bindStudentApprovalButtons(root);
   }
 
   function renderAdminBackup(){
