@@ -305,6 +305,26 @@
     const userBox = $('#userBox');
     if(userBox) userBox.innerHTML = state.user ? `<button class="secondary" id="logoutBtn">Выйти</button>` : `<button class="secondary" data-open-auth>Войти</button>`;
     const out = $('#logoutBtn'); if(out) out.onclick = signOut;
+    renderMobileSessionBar();
+  }
+
+  function renderMobileSessionBar(){
+    let bar = $('#mobileSessionBar');
+    if(!bar){
+      bar = document.createElement('div');
+      bar.id = 'mobileSessionBar';
+      bar.className = 'mobile-session-bar';
+      document.body.appendChild(bar);
+    }
+    if(state.user){
+      const destination = state.profile?.role === 'admin' ? 'admin.html' : (hasCourseAccess() ? 'course.html' : 'cabinet.html');
+      const label = state.profile?.role === 'admin' ? 'Админка' : (hasCourseAccess() ? 'Курс' : 'Статус');
+      bar.innerHTML = `<a class="secondary" href="cabinet.html">Кабинет</a><a class="primary" href="${destination}">${label}</a><button class="danger" id="mobileLogoutBtn">Выйти</button>`;
+      const mobileOut = $('#mobileLogoutBtn');
+      if(mobileOut) mobileOut.onclick = signOut;
+    } else {
+      bar.innerHTML = `<button class="primary" data-open-auth>Войти</button>`;
+    }
   }
 
   function bindCommon(){

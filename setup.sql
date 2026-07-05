@@ -228,7 +228,9 @@ security definer
 set search_path = public
 as $$
 begin
-  if not public.is_admin() then
+  -- Защищаем роль и статус только от обычного сайта/пользователей.
+  -- SQL Editor, Table Editor и серверные операции Supabase должны иметь возможность назначать admin.
+  if current_user in ('anon', 'authenticated') and not public.is_admin() then
     new.role := old.role;
     new.approval_status := old.approval_status;
     new.approved_at := old.approved_at;
@@ -251,6 +253,43 @@ $$;
 drop trigger if exists protect_profile_admin_fields_trigger on public.profiles;
 create trigger protect_profile_admin_fields_trigger before update on public.profiles
 for each row execute function public.protect_profile_admin_fields();
+
+-- Удобная функция для назначения администратора по email из SQL Editor.
+-- Пример: select * from public.make_user_admin('email@example.com');
+create or replace function public.make_user_admin(target_email text)
+returns table(id uuid, email text, role text, approval_status text)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_user_id uuid;
+begin
+  select u.id into target_user_id
+  from auth.users u
+  where lower(u.email) = lower(target_email)
+  limit 1;
+
+  if target_user_id is null then
+    raise exception 'Пользователь с email % не найден в Authentication. Сначала он должен зарегистрироваться.', target_email;
+  end if;
+
+  insert into public.profiles (id, email, full_name, role, approval_status, approved_at)
+  select u.id, lower(u.email), coalesce(u.raw_user_meta_data->>'full_name', split_part(u.email, '@', 1)), 'admin', 'approved', now()
+  from auth.users u
+  where u.id = target_user_id
+  on conflict (id) do update
+  set role = 'admin',
+      approval_status = 'approved',
+      approved_at = now();
+
+  return query
+  select p.id, p.email, p.role, p.approval_status
+  from public.profiles p
+  where p.id = target_user_id;
+end;
+$$;
+
 
 drop trigger if exists touch_profiles on public.profiles;
 create trigger touch_profiles before update on public.profiles
