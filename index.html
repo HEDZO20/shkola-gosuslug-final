@@ -1,5 +1,12 @@
 <!DOCTYPE html><html lang="ru"><head><title>Школа Госуслуг — онлайн-обучение</title><meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="Школа Госуслуг — онлайн-курс с видеоуроками, инструкциями, тестами, личным кабинетом и прогрессом ученика." />
+<meta name="theme-color" content="#091024" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Школа Госуслуг" />
+<meta property="og:description" content="Обучение работе с государственными услугами: видео, инструкции, тесты и личный кабинет." />
+<meta property="og:image" content="social-card.svg" />
+<link rel="icon" href="favicon.svg" type="image/svg+xml" />
 <link rel="stylesheet" href="style.css" />
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="supabase-config.js"></script>
@@ -9,19 +16,19 @@
   <nav class="nav">
     <a href="program.html">Программа</a>
     <a href="course.html">Курс</a>
+    <a href="materials.html">Материалы</a>
     <a href="cabinet.html">Кабинет</a>
-    <a href="certificate.html">Сертификат</a>
     <span id="userBox"></span>
   </nav>
 </header>
 <main class="container">
   <section class="hero">
     <div>
-      <div class="badge" id="heroBadge">🚀 Полноценная учебная платформа</div>
-      <h1 id="heroHeading">Обучение работе с <span>госуслугами</span></h1>
-      <p id="heroText">Простые видеоуроки, понятные инструкции, практические задания и тесты. Уроки открываются поэтапно после просмотра видео и успешного теста.</p>
+      <div class="badge" id="heroBadge">🎓 Пошаговое обучение для новичков</div>
+      <h1 id="heroHeading">Научитесь пользоваться <span class="hero-word-gos"><span class="hero-word-blue">гос</span><span class="hero-word-red">услугами</span></span></h1>
+      <p id="heroText">Понятный онлайн-курс с видеоуроками, инструкциями и проверкой знаний. Ученик проходит материал по шагам: смотрит урок, выполняет задание, проходит тест и открывает следующий этап.</p>
       <div class="hero-actions">
-        <button class="primary" data-start-course data-primary-label>Пройти курс</button>
+        <button class="primary" data-start-course data-primary-label>Начать обучение</button>
         <a class="secondary" href="cabinet.html" data-secondary-label>Личный кабинет</a>
         <a class="ghost-btn whatsapp-link" target="_blank" rel="noopener">Написать в WhatsApp</a>
       </div>
@@ -35,7 +42,7 @@
   <section id="homeProcess"></section>
 
   <section class="grid-3">
-    <div class="card"><div class="icon">📚</div><h3>Уроки по порядку</h3><p>Следующий урок откроется только после просмотра видео и успешного теста.</p></div>
+    <div class="card"><div class="icon">📚</div><h3>Уроки по порядку</h3><p>Следующий урок откроется только после просмотра видео, практики и успешного теста.</p></div>
     <div class="card"><div class="icon">📈</div><h3>Личный кабинет</h3><p>Ученик видит прогресс, просмотренные видео, тесты и следующий шаг.</p></div>
     <div class="card"><div class="icon">🛠️</div><h3>Управление без кода</h3><p>Администратор меняет тексты, уроки, видео, тесты, цвета и настройки прямо в панели управления.</p></div>
   </section>

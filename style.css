@@ -127,3 +127,578 @@ section{margin:34px 0}.section-head{display:flex;justify-content:space-between;a
 @media (min-width:1600px){:root{--max:1480px}.hero{gap:42px}}
 @media(max-width:980px){.process-grid{grid-template-columns:repeat(2,1fr)}.support-panel{display:grid}.file-upload .mini-item{grid-template-columns:1fr}.cert-grid{grid-template-columns:1fr}}
 @media(max-width:620px){.process-grid{grid-template-columns:1fr}.support-panel .primary{width:100%}.certificate-card{padding:30px 18px}}
+
+/* =========================================================
+   MOBILE FIX PACK — fixes blocks cut off / shifted on phones
+   ========================================================= */
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+* {
+  min-width: 0;
+}
+
+.table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table thead,
+.table tbody,
+.table tr {
+  width: 100%;
+}
+
+@media (max-width: 760px) {
+  .container,
+  .topbar,
+  .footer {
+    width: calc(100% - 20px);
+  }
+
+  .topbar {
+    margin: 10px auto;
+    padding: 10px 12px;
+    gap: 10px;
+  }
+
+  .brand {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .brand strong {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .brand-icon {
+    width: 38px;
+    height: 38px;
+    flex: 0 0 38px;
+  }
+
+  .hero {
+    padding: 22px 0 20px;
+    gap: 18px;
+  }
+
+  .hero h1 {
+    font-size: clamp(34px, 11vw, 44px);
+    line-height: 1.02;
+    letter-spacing: -0.04em;
+  }
+
+  .hero p {
+    font-size: 16px;
+    line-height: 1.6;
+  }
+
+  .hero-card,
+  .panel,
+  .auth-card,
+  .card {
+    padding: 18px;
+    border-radius: 22px;
+  }
+
+  .section-head {
+    display: grid;
+    align-items: start;
+    gap: 10px;
+  }
+
+  .section-head h2,
+  .page-title h1 {
+    font-size: clamp(28px, 9vw, 38px);
+  }
+
+  .primary,
+  .secondary,
+  .ghost-btn,
+  .danger,
+  .success {
+    min-height: 48px;
+    width: 100%;
+    text-align: center;
+  }
+
+  .hero-actions,
+  .lesson-actions,
+  .admin-actions,
+  .auth-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .lesson-card {
+    grid-template-columns: 46px 1fr;
+    gap: 12px;
+    padding: 14px;
+  }
+
+  .lesson-card .status {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .metric b {
+    font-size: 26px;
+  }
+
+  .phone-scene {
+    width: 100%;
+    max-width: 330px;
+    height: 292px;
+    transform: none;
+    margin: 0 auto;
+  }
+
+  .hero-phone {
+    min-height: 320px;
+    padding: 16px 10px;
+    overflow: hidden;
+  }
+
+  .person {
+    left: 0;
+    bottom: 8px;
+    width: 150px;
+  }
+
+  .head {
+    width: 54px;
+    height: 54px;
+  }
+
+  .body-shape {
+    width: 136px;
+    height: 132px;
+  }
+
+  .phone {
+    right: 0;
+    top: 34px;
+    width: 126px;
+    height: 224px;
+    border-width: 7px;
+    padding: 11px;
+  }
+
+  .phone-screen {
+    padding: 11px;
+  }
+
+  .phone-title {
+    font-size: 13px;
+  }
+
+  .phone-line {
+    height: 10px;
+    margin: 8px 0;
+  }
+
+  .phone-check {
+    font-size: 13px;
+  }
+
+  .cert-grid,
+  .grid-2,
+  .grid-3,
+  .metric-grid,
+  .preview-stats,
+  .process-grid,
+  .form-row {
+    grid-template-columns: 1fr !important;
+  }
+
+  .certificate-card {
+    padding: 28px 16px;
+  }
+
+  .modal {
+    align-items: start;
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 380px) {
+  .container,
+  .topbar,
+  .footer {
+    width: calc(100% - 16px);
+  }
+
+  .hero-card,
+  .panel,
+  .auth-card,
+  .card {
+    padding: 16px;
+  }
+
+  .phone-scene {
+    max-width: 292px;
+    height: 270px;
+  }
+
+  .hero-phone {
+    min-height: 294px;
+  }
+
+  .person {
+    width: 132px;
+  }
+
+  .head {
+    width: 48px;
+    height: 48px;
+  }
+
+  .body-shape {
+    width: 120px;
+    height: 122px;
+  }
+
+  .phone {
+    width: 116px;
+    height: 206px;
+    top: 34px;
+  }
+}
+
+/* =========================================================
+   PRO STABILITY + VISUAL POLISH PACK
+   ========================================================= */
+@media (hover:hover) and (pointer:fine) {
+  html, body, a, button, input, textarea, select, label {
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cdefs%3E%3Cfilter id='g'%3E%3CfeGaussianBlur stdDeviation='1.3'/%3E%3C/filter%3E%3C/defs%3E%3Ccircle cx='9' cy='9' r='5' fill='%2342d7ff' opacity='.35' filter='url(%23g)'/%3E%3Cpath d='M6 3l14 9-7 2-3 7z' fill='%23eaf7ff' stroke='%2342d7ff' stroke-width='1.2'/%3E%3C/svg%3E") 6 3, auto;
+  }
+  button, a, .lesson-card, .mini-item, input[type='file'], input[type='checkbox'], input[type='radio'] {
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='30' height='30' viewBox='0 0 30 30'%3E%3Ccircle cx='15' cy='15' r='9' fill='%2342d7ff' opacity='.25'/%3E%3Ccircle cx='15' cy='15' r='5' fill='%23ffffff' stroke='%2342d7ff' stroke-width='1.3'/%3E%3C/svg%3E") 15 15, pointer;
+  }
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: -40%;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    conic-gradient(from 90deg at 50% 50%, rgba(66,215,255,.12), rgba(139,92,246,.10), rgba(255,78,205,.08), rgba(66,215,255,.12));
+  animation: bgRotate 22s linear infinite;
+  filter: blur(55px);
+  opacity: .58;
+}
+@keyframes bgRotate { to { transform: rotate(360deg); } }
+
+.primary, .secondary, .ghost-btn, .danger, .success {
+  position: relative;
+  overflow: hidden;
+}
+.primary::after, .secondary::after, .ghost-btn::after, .success::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-130%);
+  background: linear-gradient(110deg, transparent, rgba(255,255,255,.28), transparent);
+  transition: transform .65s ease;
+}
+.primary:hover::after, .secondary:hover::after, .ghost-btn:hover::after, .success:hover::after {
+  transform: translateX(130%);
+}
+
+.upload-helper {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  margin-top: -2px;
+  border-radius: 20px;
+  border: 1px dashed rgba(66,215,255,.38);
+  background: rgba(66,215,255,.07);
+}
+.upload-helper b { color: #fff; }
+.upload-helper p { margin: 4px 0 0; }
+.upload-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+.upload-helper input[type="file"] {
+  min-height: 50px;
+  background: rgba(255,255,255,.06);
+}
+#lessonUploadResult input,
+#fileResult input,
+#fileList input {
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.auth-actions { margin-top: 22px; }
+.auth-card .primary, .auth-card .secondary { min-width: 150px; }
+button[disabled]::after { display: none; }
+
+.modal { animation: modalFade .18s ease both; }
+.modal .auth-card { animation: modalRise .22s ease both; }
+@keyframes modalFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modalRise { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
+
+@media (max-width:760px){
+  .upload-row { grid-template-columns: 1fr; }
+  .upload-helper { padding: 14px; }
+  body::before { opacity: .38; }
+}
+
+/* =========================================================
+   FINAL OPERATIONS PACK: recovery, backups, analytics, docs
+   ========================================================= */
+.auth-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.big-number {
+  font-size: 46px;
+  line-height: 1;
+  font-weight: 900;
+  color: #fff;
+  margin: 10px 0;
+  text-shadow: 0 0 28px rgba(66,215,255,.25);
+}
+.glass-lite {
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(255,255,255,.055);
+  border: 1px solid rgba(255,255,255,.10);
+}
+.admin-overview-grid { margin-top: 18px; }
+.mini-list.compact .mini-item {
+  padding: 10px 12px;
+  gap: 8px;
+}
+.mini-item small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.file-mini {
+  grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.3fr) auto;
+  align-items: center;
+}
+.file-mini input {
+  width: 100%;
+  margin: 0 !important;
+}
+.danger.small {
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.help-steps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 18px 0;
+}
+.help-step {
+  position: relative;
+  padding: 18px 18px 18px 70px;
+  border-radius: 22px;
+  background: rgba(255,255,255,.055);
+  border: 1px solid rgba(255,255,255,.10);
+}
+.help-step b {
+  position: absolute;
+  left: 16px;
+  top: 18px;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: linear-gradient(135deg,var(--blue),var(--violet));
+  color: #fff;
+  box-shadow: 0 0 30px rgba(66,215,255,.22);
+}
+.help-step h3 { margin-bottom: 6px; }
+.help-step p { color: var(--muted); line-height: 1.55; }
+#backupExportResult,
+#backupImportResult { margin-top: 12px; }
+.preview-box {
+  margin-top: 16px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(66,215,255,.22);
+  background: rgba(66,215,255,.06);
+}
+@media (max-width: 760px) {
+  .help-steps { grid-template-columns: 1fr; }
+  .help-step { padding: 16px 16px 16px 64px; }
+  .file-mini { grid-template-columns: 1fr; }
+  .file-mini input { width: 100%; }
+  .auth-switch-row { align-items: stretch; }
+  .auth-switch-row button { width: 100%; }
+}
+
+/* Simplified lesson editor */
+.lesson-simple-form h3 {
+  margin-top: 22px;
+  padding-top: 4px;
+}
+.lesson-simple-form .small-select select {
+  max-width: 360px;
+}
+.advanced-options {
+  margin: 14px 0;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--stroke);
+  background: rgba(255,255,255,.05);
+}
+.advanced-options summary {
+  cursor: pointer;
+  font-weight: 900;
+  color: #fff;
+  list-style: none;
+}
+.advanced-options summary::-webkit-details-marker {
+  display: none;
+}
+.advanced-options summary::before {
+  content: '＋';
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 8px;
+  border-radius: 9px;
+  background: rgba(66,215,255,.12);
+  border: 1px solid rgba(66,215,255,.22);
+}
+.advanced-options[open] summary::before {
+  content: '−';
+}
+.simplified-upload {
+  margin: 10px 0 12px;
+}
+
+/* Финальные улучшения: завершение курса, статусы уроков и тестовый режим */
+.completion-card{max-width:920px;margin:40px auto;padding:42px;text-align:center;position:relative;overflow:hidden}
+.completion-card:before{content:"";position:absolute;inset:-40%;background:radial-gradient(circle,rgba(66,215,255,.14),transparent 55%);animation:softRotate 12s linear infinite;z-index:0}
+.completion-card>*{position:relative;z-index:1}
+.completion-icon{font-size:64px;margin-bottom:12px;text-shadow:0 0 35px rgba(66,215,255,.45)}
+.completion-card h1{font-size:clamp(34px,6vw,64px);margin:0 0 14px;background:linear-gradient(90deg,#fff,var(--blue),var(--pink));-webkit-background-clip:text;background-clip:text;color:transparent}
+.completion-card p{max-width:720px;margin:0 auto 24px;color:var(--muted);font-size:18px;line-height:1.7}
+.completion-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:22px}
+.lesson-status-panel{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px;border-radius:18px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1)}
+.problem-card .big-number,.big-number{font-size:42px;font-weight:900;margin:6px 0;color:#fff;text-shadow:0 0 24px rgba(66,215,255,.25)}
+.preview-box{margin-top:16px;padding:18px;border-radius:22px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12)}
+.admin-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.notice.warning button{margin-top:10px}
+@keyframes softRotate{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@media(max-width:700px){.completion-card{padding:26px;margin:18px auto}.completion-actions .primary,.completion-actions .secondary,.completion-actions .ghost-btn{width:100%;justify-content:center}.lesson-status-panel{align-items:flex-start}.admin-actions>*{width:100%;justify-content:center}}
+
+
+/* Слитное цветное слово «госуслугами» в главном заголовке */
+.hero-word-gos{
+  display:inline-flex;
+  align-items:baseline;
+  gap:0;
+  white-space:nowrap;
+  background:none!important;
+  -webkit-background-clip:initial!important;
+  background-clip:initial!important;
+  color:inherit!important;
+  text-shadow:none!important;
+}
+.hero-word-blue,
+.hero-word-red{
+  display:inline;
+  font:inherit;
+  letter-spacing:inherit;
+  line-height:inherit;
+}
+.hero-word-blue{
+  color:var(--blue);
+  text-shadow:0 0 34px rgba(66,215,255,.32);
+}
+.hero-word-red{
+  color:var(--pink);
+  text-shadow:0 0 34px rgba(255,78,205,.28);
+}
+
+/* Умный прогресс, материалы, поиск и активность */
+.smart-progress{display:grid;gap:8px;margin-top:10px}
+.smart-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);color:var(--muted)}
+.smart-row.done{color:#d7ffec;background:rgba(54,227,155,.09);border-color:rgba(54,227,155,.22)}
+.smart-row b{width:22px;text-align:center}.smart-lesson-card{align-items:start}.lesson-actions{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}.mini-progress-line{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.mini-progress-line span{padding:6px 9px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid var(--stroke);font-size:12px;color:var(--muted)}.mini-progress-line span.on{color:#d7ffec;background:rgba(54,227,155,.1);border-color:rgba(54,227,155,.25)}
+.course-search{margin-bottom:16px}.search-results h2{margin-top:26px}.material-card{display:block;min-height:210px}.material-card span{display:block;margin-top:10px}.material-inline-list{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.material-inline-list a{padding:8px 10px;border-radius:999px;background:rgba(255,255,255,.07);border:1px solid var(--stroke)}
+.activity-feed{display:grid;gap:10px}.activity-item{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;padding:13px 14px;border-radius:16px;background:rgba(255,255,255,.06);border:1px solid var(--stroke)}.activity-item p{margin:4px 0 0;color:var(--muted)}.activity-item small{color:var(--muted);white-space:nowrap}.file-mini p{margin:6px 0 0}.small{padding:8px 11px;font-size:12px;border-radius:12px}.check-label{display:flex!important;grid-template-columns:auto 1fr!important;align-items:center;gap:10px}.check-label input{width:auto}
+@media(max-width:700px){.activity-item{display:block}.activity-item small{display:block;margin-top:6px}.lesson-actions>*{width:100%;justify-content:center}.material-inline-list a{width:100%}}
+
+/* Ровные отступы в боковом блоке прогресса на странице курса */
+.course-progress-card h3 {
+  margin-bottom: 16px;
+}
+
+.course-progress-card .progressbar {
+  margin-bottom: 16px;
+}
+
+.course-progress-main {
+  margin: 0 0 8px;
+  line-height: 1.55;
+}
+
+.course-progress-hint {
+  margin: 0 0 18px;
+  line-height: 1.6;
+}
+
+.course-next-lesson {
+  margin: 18px 0 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,.1);
+  line-height: 1.6;
+}
+
+.course-finish-note {
+  margin: 18px 0 14px;
+}
+
+.course-side-actions {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.course-side-actions .primary,
+.course-side-actions .secondary {
+  width: 100%;
+  min-height: 48px;
+}
+
+@media (max-width: 900px) {
+  .course-progress-card {
+    margin-bottom: 18px;
+  }
+
+  .course-side-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+}
+
+@media (max-width: 620px) {
+  .course-side-actions {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+}

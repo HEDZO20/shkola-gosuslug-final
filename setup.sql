@@ -19,7 +19,7 @@ create table if not exists public.site_settings (
   site_subtitle text not null default 'Научитесь пользоваться государственными услугами быстро и уверенно',
   site_logo text default '✦',
   hero_badge text default '🚀 Полноценная учебная платформа',
-  hero_title text default 'Обучение работе с',
+  hero_title text default 'Научитесь пользоваться',
   hero_highlight text default 'госуслугами',
   hero_text text not null default 'Простые видеоуроки, понятные инструкции, практические задания и тесты. Уроки открываются поэтапно после просмотра видео и успешного теста.',
   primary_button_text text default 'Пройти курс',
@@ -33,9 +33,6 @@ create table if not exists public.site_settings (
   process_steps jsonb not null default '["Зарегистрируйтесь и откройте курс", "Посмотрите видеоурок", "Выполните инструкцию и практику", "Пройдите тест и откройте следующий урок"]'::jsonb,
   support_title text default 'Нужна помощь?',
   support_text text default 'Если у ученика возник вопрос по уроку, он может сразу написать преподавателю в WhatsApp.',
-  certificate_title text default 'Сертификат участника',
-  certificate_text text default 'подтверждает успешное прохождение курса',
-  certificate_footer text default 'Школа Госуслуг',
   theme_primary text default '#42d7ff',
   theme_secondary text default '#8b5cf6',
   theme_accent text default '#ff4ecd',
@@ -51,7 +48,7 @@ on conflict (id) do nothing;
 -- Обновление старых проектов: добавляем новые поля, если вы уже запускали прежний setup.sql.
 alter table public.site_settings add column if not exists site_logo text default '✦';
 alter table public.site_settings add column if not exists hero_badge text default '🚀 Полноценная учебная платформа';
-alter table public.site_settings add column if not exists hero_title text default 'Обучение работе с';
+alter table public.site_settings add column if not exists hero_title text default 'Научитесь пользоваться';
 alter table public.site_settings add column if not exists hero_highlight text default 'госуслугами';
 alter table public.site_settings add column if not exists primary_button_text text default 'Пройти курс';
 alter table public.site_settings add column if not exists secondary_button_text text default 'Личный кабинет';
@@ -62,14 +59,17 @@ alter table public.site_settings add column if not exists process_title text def
 alter table public.site_settings add column if not exists process_steps jsonb not null default '["Зарегистрируйтесь и откройте курс", "Посмотрите видеоурок", "Выполните инструкцию и практику", "Пройдите тест и откройте следующий урок"]'::jsonb;
 alter table public.site_settings add column if not exists support_title text default 'Нужна помощь?';
 alter table public.site_settings add column if not exists support_text text default 'Если у ученика возник вопрос по уроку, он может сразу написать преподавателю в WhatsApp.';
-alter table public.site_settings add column if not exists certificate_title text default 'Сертификат участника';
-alter table public.site_settings add column if not exists certificate_text text default 'подтверждает успешное прохождение курса';
-alter table public.site_settings add column if not exists certificate_footer text default 'Школа Госуслуг';
 alter table public.site_settings add column if not exists theme_primary text default '#42d7ff';
 alter table public.site_settings add column if not exists theme_secondary text default '#8b5cf6';
 alter table public.site_settings add column if not exists theme_accent text default '#ff4ecd';
 alter table public.site_settings add column if not exists site_width int default 1360;
 alter table public.site_settings add column if not exists footer_text text default '';
+
+-- Если в старой версии на главной было выделено слово "уверенно" или "услугами", меняем на "госуслугами".
+update public.site_settings
+set hero_title = 'Научитесь пользоваться',
+    hero_highlight = 'госуслугами'
+where id = 1 and coalesce(hero_highlight, '') in ('уверенно', 'услугами');
 
 create table if not exists public.lessons (
   id uuid primary key default gen_random_uuid(),
@@ -105,12 +105,45 @@ create table if not exists public.lesson_progress (
   user_id uuid not null references auth.users(id) on delete cascade,
   lesson_id uuid not null references public.lessons(id) on delete cascade,
   video_watched boolean not null default false,
+  practice_done boolean not null default false,
   quiz_score int,
   completed boolean not null default false,
   completed_at timestamptz,
   updated_at timestamptz not null default now(),
   unique(user_id, lesson_id)
 );
+
+-- События сайта для простой аналитики в админке.
+
+-- Обновление старых проектов: добавляем отдельный статус практического задания.
+alter table public.lesson_progress add column if not exists practice_done boolean not null default false;
+
+-- Библиотека материалов: PDF, картинки, дополнительные видео и памятки.
+create table if not exists public.materials (
+  id uuid primary key default gen_random_uuid(),
+  lesson_id uuid references public.lessons(id) on delete set null,
+  title text not null,
+  description text default '',
+  file_url text not null,
+  file_path text default '',
+  file_type text default 'file',
+  is_published boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_materials_lesson_id on public.materials(lesson_id);
+create index if not exists idx_materials_created_at on public.materials(created_at desc);
+
+create table if not exists public.site_events (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete set null,
+  page text default '',
+  action text not null,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_site_events_created_at on public.site_events(created_at desc);
+create index if not exists idx_site_events_action on public.site_events(action);
 
 -- Автоматически создаем профиль после регистрации пользователя.
 create or replace function public.handle_new_user()
@@ -172,11 +205,17 @@ drop trigger if exists touch_progress on public.lesson_progress;
 create trigger touch_progress before update on public.lesson_progress
 for each row execute function public.touch_updated_at();
 
+drop trigger if exists touch_materials on public.materials;
+create trigger touch_materials before update on public.materials
+for each row execute function public.touch_updated_at();
+
 alter table public.profiles enable row level security;
 alter table public.site_settings enable row level security;
 alter table public.lessons enable row level security;
 alter table public.quiz_questions enable row level security;
 alter table public.lesson_progress enable row level security;
+alter table public.materials enable row level security;
+alter table public.site_events enable row level security;
 
 -- Чтение настроек доступно всем, изменение только администратору.
 drop policy if exists "settings_read" on public.site_settings;
@@ -237,6 +276,30 @@ create policy "progress_insert_self" on public.lesson_progress for insert with c
 drop policy if exists "progress_update_self" on public.lesson_progress;
 create policy "progress_update_self" on public.lesson_progress for update using (user_id = auth.uid()) with check (user_id = auth.uid());
 
+
+-- Материалы: опубликованные видят авторизованные, админ управляет всеми.
+drop policy if exists "materials_select" on public.materials;
+create policy "materials_select" on public.materials for select using (is_published = true or public.is_admin());
+
+drop policy if exists "materials_admin_insert" on public.materials;
+create policy "materials_admin_insert" on public.materials for insert with check (public.is_admin());
+
+drop policy if exists "materials_admin_update" on public.materials;
+create policy "materials_admin_update" on public.materials for update using (public.is_admin()) with check (public.is_admin());
+
+drop policy if exists "materials_admin_delete" on public.materials;
+create policy "materials_admin_delete" on public.materials for delete using (public.is_admin());
+
+-- Аналитика: сайт может добавлять события, админ может читать.
+drop policy if exists "events_insert" on public.site_events;
+create policy "events_insert" on public.site_events for insert with check (true);
+
+drop policy if exists "events_admin_select" on public.site_events;
+create policy "events_admin_select" on public.site_events for select using (public.is_admin());
+
+drop policy if exists "events_admin_delete" on public.site_events;
+create policy "events_admin_delete" on public.site_events for delete using (public.is_admin());
+
 -- Примеры уроков, чтобы сайт сразу выглядел заполненным.
 -- Блок написан так, чтобы повторный запуск setup.sql не создавал дубликаты.
 insert into public.lessons (sort_order, icon, title, description, duration, content, steps, mistakes, practice, is_published)
@@ -268,9 +331,18 @@ where not exists (
     and q.question = v.question
 );
 
+
+-- Пример материалов библиотеки.
+insert into public.materials (title, description, file_url, file_type, is_published)
+select * from (values
+  ('Памятка ученика', 'Короткий чек-лист перед началом прохождения курса.', '#', 'pdf', true),
+  ('Шаблон заметок по уроку', 'Можно использовать как конспект во время обучения.', '#', 'file', true)
+) as v(title, description, file_url, file_type, is_published)
+where not exists (select 1 from public.materials);
+
 -- Storage bucket для видео и файлов.
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values ('lesson-files', 'lesson-files', true, 524288000, array['video/mp4','video/webm','video/quicktime','image/png','image/jpeg','application/pdf'])
+values ('lesson-files', 'lesson-files', true, 524288000, array['video/mp4','video/webm','video/quicktime','video/x-m4v','image/png','image/jpeg','image/webp','application/pdf'])
 on conflict (id) do nothing;
 
 -- Публичное чтение файлов.

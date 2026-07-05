@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07111f"/><stop offset=".55" stop-color="#121a46"/><stop offset="1" stop-color="#321153"/></linearGradient>
+    <linearGradient id="txt" x1="0" x2="1"><stop stop-color="#42d7ff"/><stop offset="1" stop-color="#ff4ecd"/></linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="1020" cy="120" r="250" fill="#42d7ff" opacity=".13"/>
+  <circle cx="150" cy="520" r="220" fill="#ff4ecd" opacity=".12"/>
+  <rect x="85" y="80" width="1030" height="470" rx="40" fill="white" opacity=".08" stroke="white" stroke-opacity=".18"/>
+  <text x="130" y="205" fill="white" font-family="Arial, sans-serif" font-size="74" font-weight="700">Школа Госуслуг</text>
+  <text x="130" y="290" fill="url(#txt)" font-family="Arial, sans-serif" font-size="54" font-weight="700">онлайн-обучение по шагам</text>
+  <text x="130" y="370" fill="#dce7ff" font-family="Arial, sans-serif" font-size="32">Видеоуроки, инструкции, тесты, прогресс и личный кабинет</text>
+  <rect x="130" y="430" width="310" height="70" rx="35" fill="url(#txt)"/>
+  <text x="180" y="476" fill="white" font-family="Arial, sans-serif" font-size="28" font-weight="700">Пройти курс</text>
+</svg>
