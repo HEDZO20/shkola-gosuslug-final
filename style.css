@@ -753,3 +753,123 @@ button[disabled]::after { display: none; }
   .approval-card .auth-actions,
   .approval-card .auth-actions>*{width:100%;justify-content:center}
 }
+
+/* Улучшенный раздел уроков в админке: список слева, редактор справа */
+.admin-lessons-layout{
+  display:grid;
+  grid-template-columns:minmax(280px,360px) 1fr;
+  gap:20px;
+  align-items:start;
+}
+.admin-lesson-list{
+  position:sticky;
+  top:108px;
+  padding:16px;
+  border-radius:24px;
+  background:rgba(255,255,255,.055);
+  border:1px solid var(--stroke);
+  box-shadow:0 18px 50px rgba(0,0,0,.18);
+}
+.lesson-list-top{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:12px;
+}
+.lesson-list-top b{color:#fff;font-size:18px}
+.lesson-list-top span{color:var(--muted);font-size:13px}
+.lesson-list-search{margin-bottom:12px}
+.lesson-list-search input{
+  width:100%;
+  padding:13px 14px;
+  border-radius:16px;
+  border:1px solid var(--stroke);
+  background:rgba(255,255,255,.07);
+  color:#fff;
+  outline:none;
+}
+.lesson-list-rows{
+  display:grid;
+  gap:10px;
+  max-height:calc(100vh - 280px);
+  overflow:auto;
+  padding-right:4px;
+}
+.admin-lesson-row{
+  width:100%;
+  display:grid;
+  grid-template-columns:38px 1fr auto;
+  align-items:center;
+  gap:12px;
+  text-align:left;
+  padding:12px;
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.1);
+  background:rgba(255,255,255,.055);
+  color:#fff;
+  cursor:pointer;
+  transition:.18s ease;
+}
+.admin-lesson-row:hover{
+  transform:translateY(-1px);
+  border-color:rgba(66,215,255,.32);
+  background:rgba(66,215,255,.08);
+}
+.admin-lesson-row.active{
+  border-color:rgba(66,215,255,.55);
+  background:linear-gradient(135deg,rgba(66,215,255,.14),rgba(139,92,255,.1));
+  box-shadow:0 0 30px rgba(66,215,255,.1);
+}
+.lesson-row-number{
+  width:38px;
+  height:38px;
+  display:grid;
+  place-items:center;
+  border-radius:14px;
+  background:rgba(255,255,255,.08);
+  border:1px solid rgba(255,255,255,.1);
+  color:#dbeafe;
+  font-weight:900;
+}
+.lesson-row-main{min-width:0;display:grid;gap:4px}
+.lesson-row-main b{
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  color:#fff;
+}
+.lesson-row-main small{
+  color:var(--muted);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.lesson-row-status{
+  font-size:12px;
+  font-weight:900;
+  border-radius:999px;
+  padding:7px 10px;
+  white-space:nowrap;
+}
+.lesson-row-status.published{background:rgba(34,197,94,.14);color:#bbf7d0;border:1px solid rgba(34,197,94,.25)}
+.lesson-row-status.draft{background:rgba(251,191,36,.13);color:#fde68a;border:1px solid rgba(251,191,36,.25)}
+.admin-lesson-editor{
+  min-width:0;
+}
+.admin-lesson-editor .lesson-simple-form{
+  padding:18px;
+  border-radius:24px;
+  background:rgba(255,255,255,.045);
+  border:1px solid var(--stroke);
+}
+@media(max-width:980px){
+  .admin-lessons-layout{grid-template-columns:1fr}
+  .admin-lesson-list{position:static}
+  .lesson-list-rows{max-height:none}
+}
+@media(max-width:620px){
+  .admin-lesson-row{grid-template-columns:34px 1fr;align-items:start}
+  .lesson-row-status{grid-column:2;justify-self:start;margin-top:2px}
+  .lesson-row-number{width:34px;height:34px}
+}

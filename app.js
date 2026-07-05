@@ -657,6 +657,16 @@
     $('#adminLogout').onclick=signOut;
     renderAdminOverview(); await renderAdminLessons(); renderAdminFiles(); renderAdminMaterials(); renderAdminStudents(); renderAdminProblems(); renderAdminActivity(); renderAdminBackup(); renderAdminHelp(); renderAdminSettings();
   }
+  function adminLessonRowsHtml(term=''){
+    const items = (state.lessons || []).filter(l => !term || [l.title,l.description,String(l.sort_order),l.icon].join(' ').toLowerCase().includes(term));
+    if(!items.length) return '<div class="empty">Уроки не найдены</div>';
+    return items.map(l=>`<button class="admin-lesson-row ${l.id===selectedLessonId?'active':''}" data-lesson-id="${l.id}">
+      <span class="lesson-row-number">${esc(l.sort_order || '')}</span>
+      <span class="lesson-row-main"><b>${esc(l.icon || '🎓')} ${esc(l.title || 'Без названия')}</b><small>${esc(l.description || 'Описание не заполнено')}</small></span>
+      <span class="lesson-row-status ${l.is_published!==false?'published':'draft'}">${lessonStatusLabel(l)}</span>
+    </button>`).join('');
+  }
+
   function renderAdminOverview(){
     const root=$('#tab-overview'); if(!root) return; const students=(state.allProfiles||[]).filter(p=>p.role!=='admin'); const pendingStudents=students.filter(st=>approvalStatus(st)==='pending').length; const completedStudents=students.filter(st=>state.lessons.length && state.lessons.every(l=>state.allProgress.some(p=>p.user_id===st.id && p.lesson_id===l.id && p.completed))).length;
     const active = students.filter(st=>state.allProgress.some(p=>p.user_id===st.id)).length;
@@ -673,8 +683,24 @@
     if(!selectedLessonId && state.lessons[0]) selectedLessonId = state.lessons[0].id;
     const lesson = state.lessons.find(l=>l.id===selectedLessonId) || null;
     const questions = lesson ? await loadQuestions(lesson.id) : [];
-    root.innerHTML = `<div class="section-head"><div><h2>Уроки</h2><p>Черновики не видны ученикам. Опубликованные уроки появляются сразу.</p></div><button class="primary" id="newLessonBtn">+ Новый урок</button></div><div class="editor-grid"><div class="mini-list">${state.lessons.map(l=>`<button class="mini-item ${l.id===selectedLessonId?'active':''}" data-lesson-id="${l.id}"><span>${l.sort_order}. ${esc(l.icon)} ${esc(l.title)}</span><small>${lessonStatusLabel(l)}</small></button>`).join('') || '<div class="empty">Пока нет уроков</div>'}</div><div id="lessonFormBox"></div></div>`;
-    $$('.mini-item[data-lesson-id]',root).forEach(b=>b.onclick=()=>{selectedLessonId=b.dataset.lessonId;renderAdminLessons();});
+    root.innerHTML = `<div class="section-head lessons-admin-head"><div><h2>Уроки</h2><p>Слева список всех уроков. Нажмите на нужный урок — справа откроется его редактирование.</p></div><button class="primary" id="newLessonBtn">+ Новый урок</button></div>
+      <div class="admin-lessons-layout">
+        <aside class="admin-lesson-list">
+          <div class="lesson-list-top"><b>Список уроков</b><span>${state.lessons.length} шт.</span></div>
+          <div class="lesson-list-search"><input id="adminLessonSearch" placeholder="Найти урок..."></div>
+          <div id="adminLessonRows" class="lesson-list-rows">${adminLessonRowsHtml('')}</div>
+        </aside>
+        <section class="admin-lesson-editor"><div id="lessonFormBox"></div></section>
+      </div>`;
+    const renderRows = () => {
+      const term = ($('#adminLessonSearch')?.value || '').trim().toLowerCase();
+      const rows = $('#adminLessonRows');
+      if(rows) rows.innerHTML = adminLessonRowsHtml(term);
+      $$('.admin-lesson-row[data-lesson-id]',root).forEach(b=>b.onclick=()=>{selectedLessonId=b.dataset.lessonId;renderAdminLessons();});
+    };
+    const search = $('#adminLessonSearch');
+    if(search) search.oninput = renderRows;
+    renderRows();
     $('#newLessonBtn').onclick=()=>{selectedLessonId=null; renderLessonForm(null,[]);};
     renderLessonForm(lesson, questions);
   }
