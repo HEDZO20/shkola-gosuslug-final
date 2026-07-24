@@ -32,8 +32,78 @@
   function confirmAction(text){ return window.confirm(text || 'Подтвердите действие'); }
   async function safePromise(promise, fallback=null){ try{ return await promise; }catch(e){ console.warn(e); return fallback; } }
 
+  function extractIframeSrc(value=''){
+    const text = String(value || '').trim();
+    const match = text.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+    return match ? match[1].trim() : text;
+  }
+  function timeToSeconds(value=''){
+    const t = String(value || '').trim();
+    if(!t) return 0;
+    if(/^\d+$/.test(t)) return Number(t);
+    const m = t.match(/(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/i);
+    if(!m) return 0;
+    return (Number(m[1]||0)*3600) + (Number(m[2]||0)*60) + Number(m[3]||0);
+  }
+  function youtubeEmbedUrl(value=''){
+    const raw = extractIframeSrc(value);
+    if(!raw) return '';
+    try{
+      const u = new URL(raw, location.href);
+      const host = u.hostname.replace(/^www\./,'').replace(/^m\./,'');
+      let id = '';
+      if(host === 'youtu.be') id = u.pathname.split('/').filter(Boolean)[0] || '';
+      if(host.endsWith('youtube.com') || host.endsWith('youtube-nocookie.com')){
+        const parts = u.pathname.split('/').filter(Boolean);
+        if(u.pathname === '/watch') id = u.searchParams.get('v') || '';
+        else if(parts[0] === 'shorts' || parts[0] === 'embed' || parts[0] === 'live') id = parts[1] || '';
+      }
+      id = String(id).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,64);
+      if(!id) return '';
+      const start = Number(u.searchParams.get('start') || timeToSeconds(u.searchParams.get('t') || u.searchParams.get('time_continue')) || 0);
+      const embed = new URL(`https://www.youtube-nocookie.com/embed/${id}`);
+      embed.searchParams.set('rel','0');
+      embed.searchParams.set('modestbranding','1');
+      embed.searchParams.set('playsinline','1');
+      if(start > 0) embed.searchParams.set('start', String(start));
+      return embed.toString();
+    }catch(e){ return ''; }
+  }
+  function rutubeEmbedUrl(value=''){
+    const raw = extractIframeSrc(value);
+    if(!raw) return '';
+    try{
+      const u = new URL(raw, location.href);
+      const host = u.hostname.replace(/^www\./,'');
+      if(!host.endsWith('rutube.ru')) return '';
+      const parts = u.pathname.split('/').filter(Boolean);
+      let id = '';
+      if(parts[0] === 'video') id = parts[1] || '';
+      if(parts[0] === 'play' && parts[1] === 'embed') id = parts[2] || '';
+      id = String(id).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80);
+      return id ? `https://rutube.ru/play/embed/${id}/` : '';
+    }catch(e){ return ''; }
+  }
+  function directVideoUrl(value=''){
+    const raw = extractIframeSrc(value);
+    return /\.(mp4|webm|mov)(\?|#|$)/i.test(raw) ? raw : '';
+  }
+  function normalizeLessonVideo(value='', selectedType='auto'){
+    const raw = extractIframeSrc(value);
+    const typed = String(selectedType || 'auto');
+    if(!raw) return {type:'none', url:''};
+    const yt = youtubeEmbedUrl(raw);
+    if(yt) return {type:'youtube', url:yt, provider:'youtube'};
+    const rt = rutubeEmbedUrl(raw);
+    if(rt) return {type:'youtube', url:rt, provider:'rutube'};
+    if(typed === 'file') return {type:'file', url:raw};
+    if(typed === 'youtube') return {type:'youtube', url:raw};
+    if(typed === 'none') return {type:'external', url:raw};
+    return {type:typed || 'external', url:raw};
+  }
 
-  const CACHE_VERSION = 'v9_stable';
+
+  const CACHE_VERSION = 'v10_youtube_embed';
   function cacheKey(name, extra='global'){
     const project = (CFG.url || 'demo').replace(/[^a-zA-Z0-9]/g,'_').slice(-42);
     return `sg_${CACHE_VERSION}_${project}_${name}_${extra || 'global'}`;
@@ -749,9 +819,11 @@
     }catch(e){ console.warn(e); const root=$('#lessonRoot'); if(root) root.innerHTML = networkErrorHtml('Урок не загрузился'); }
   }
   function renderVideo(lesson){
-    if(!lesson.video_url || lesson.video_type==='none') return `<div class="video-box"><div class="empty">Видео пока не добавлено. Можно изучить текст и отметить урок просмотренным.</div></div>`;
-    if(lesson.video_type==='youtube') return `<div class="video-box"><iframe src="${esc(lesson.video_url)}" loading="lazy" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>`;
-    return `<div class="video-box"><video src="${esc(lesson.video_url)}" controls playsinline preload="metadata"></video></div>`;
+    const normalized = normalizeLessonVideo(lesson.video_url, lesson.video_type);
+    if(!normalized.url || normalized.type==='none') return `<div class="video-box"><div class="empty">Видео пока не добавлено. Можно изучить текст и отметить урок просмотренным.</div></div>`;
+    if(normalized.type==='youtube') return `<div class="video-box"><iframe title="Видео урока" src="${esc(normalized.url)}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div><p class="video-note">Видео открывается прямо внутри сайта.</p>`;
+    if(normalized.type==='external' && !directVideoUrl(normalized.url)) return `<div class="video-box"><div class="empty">Внешняя ссылка на видео</div></div><p><a class="secondary" href="${esc(normalized.url)}" target="_blank" rel="noopener">Открыть видео</a></p>`;
+    return `<div class="video-box"><video src="${esc(normalized.url)}" controls playsinline preload="metadata"></video></div>`;
   }
   function lessonContentHtml(lesson){
     return `<div class="lesson-content"><h2>Конспект урока</h2><p>${String(lesson.content||'Материал урока скоро появится.').replace(/\n/g,'<br>')}</p></div>
@@ -971,9 +1043,10 @@
       <div class="form-row"><label>Длительность<input name="duration" value="${esc(lesson?.duration || '10 минут')}" placeholder="10 минут"></label><label>Порядок<input name="sort_order" type="number" value="${esc(lesson?.sort_order || state.lessons.length+1)}"></label></div>
 
       <h3>2. Видео</h3>
-      <label>Ссылка на видео<input name="video_url" id="videoUrlInput" value="${esc(lesson?.video_url || '')}" placeholder="Можно загрузить файл ниже или вставить ссылку"></label>
-      <div class="upload-helper simplified-upload"><div><b>Загрузить свое видео</b><p class="hint">Выберите MP4, WEBM или MOV. После загрузки ссылка вставится автоматически.</p></div><div class="upload-row"><input type="file" id="lessonVideoFile" accept="video/mp4,video/webm,video/quicktime"><button class="secondary" type="button" id="uploadLessonVideo">Загрузить видео</button></div><div id="lessonUploadResult"></div></div>
-      <label class="small-select">Тип видео<select name="video_type" id="videoTypeSelect"><option value="none">Без видео</option><option value="file">Загруженное видео</option><option value="youtube">YouTube/Rutube iframe</option><option value="external">Прямая ссылка</option></select></label>
+      <label>Ссылка на видео<input name="video_url" id="videoUrlInput" value="${esc(lesson?.video_url || '')}" placeholder="Вставьте ссылку YouTube / Rutube или прямую ссылку MP4"></label>
+      <div class="notice compact-note"><b>YouTube:</b> вставьте обычную ссылку вида youtube.com/watch или youtu.be — сайт сам покажет видео внутри урока без перехода на YouTube.</div>
+      <div class="upload-helper simplified-upload"><div><b>Загрузить свое видео</b><p class="hint">Для Supabase Free лучше MP4 до 50 МБ. Для больших видео используйте YouTube и вставьте ссылку выше.</p></div><div class="upload-row"><input type="file" id="lessonVideoFile" accept="video/mp4,video/webm,video/quicktime"><button class="secondary" type="button" id="uploadLessonVideo">Загрузить видео</button></div><div id="lessonUploadResult"></div></div>
+      <label class="small-select">Тип видео<select name="video_type" id="videoTypeSelect"><option value="none">Без видео</option><option value="file">Загруженное видео</option><option value="youtube">Встроенное видео YouTube/Rutube</option><option value="external">Прямая ссылка</option></select></label>
 
       <h3>3. Материал урока</h3>
       <label>Текст урока<textarea name="content" placeholder="Напишите здесь основной материал урока простыми словами">${esc(lesson?.content || '')}</textarea></label>
@@ -994,6 +1067,15 @@
       <div class="admin-actions"><button class="secondary" type="button" id="addQuestionBtn">+ Добавить вопрос</button><button class="secondary" type="button" id="previewLessonBtn">Предпросмотр</button>${lesson?'<button class="secondary" type="button" id="previewAsStudentBtn">Посмотреть как ученик</button><button class="secondary" type="button" id="togglePublishBtn">'+(lesson.is_published?'Скрыть':'Опубликовать')+'</button>':''}<button class="primary" type="submit">Сохранить урок</button>${lesson?'<button class="danger" type="button" id="deleteLessonBtn">Удалить</button>':''}</div>
       <div id="lessonPreviewAdmin"></div><div id="lessonSaveResult"></div></form>`;
     if(lesson) $('select[name="video_type"]',root).value = lesson.video_type || 'none';
+    const videoUrlInput = $('#videoUrlInput', root);
+    const videoTypeSelect = $('#videoTypeSelect', root) || $('select[name="video_type"]', root);
+    if(videoUrlInput && videoTypeSelect){
+      videoUrlInput.addEventListener('input', ()=>{
+        const detected = normalizeLessonVideo(videoUrlInput.value, videoTypeSelect.value);
+        if(detected.type === 'youtube') videoTypeSelect.value = 'youtube';
+        else if(detected.type === 'external' && videoTypeSelect.value === 'none') videoTypeSelect.value = 'external';
+      });
+    }
     const uploadBtn = $('#uploadLessonVideo', root);
     if(uploadBtn) uploadBtn.onclick = async()=>uploadLessonVideo(root);
     $('#addQuestionBtn').onclick=()=>{ const idx=$$('.question-box').length; $('#quizEditor').insertAdjacentHTML('beforeend', questionEditorHtml({question:'',answers:['','',''],correct_index:0},idx)); };
@@ -1009,7 +1091,7 @@
       selectedLessonId=saved.id; await loadLessons(true); trackEvent('lesson_save',{lesson_id:saved.id,title:saved.title}); $('#lessonSaveResult').innerHTML=msg('Урок сохранен. Изменения сразу доступны на сайте.'); await renderAdminLessons(); renderAdminOverview();
     };
   }
-  function lessonFormPayload(fd){ const videoUrl=String(fd.get('video_url')||'').trim(); let videoType=fd.get('video_type')||'none'; if(videoUrl && videoType==='none') videoType = /youtube|youtu\.be|rutube/i.test(videoUrl) ? 'youtube' : 'external'; return {sort_order:Number(fd.get('sort_order')||1),icon:fd.get('icon')||'🎓',title:fd.get('title'),description:fd.get('description'),duration:fd.get('duration'),video_type:videoType,video_url:videoUrl,content:fd.get('content'),steps:arr(fd.get('steps')),mistakes:arr(fd.get('mistakes')),practice:fd.get('practice'),passing_score:Number(fd.get('passing_score')||settings().passing_score||70),is_published:!!fd.get('is_published')}; }
+  function lessonFormPayload(fd){ const originalVideoUrl=String(fd.get('video_url')||'').trim(); const selectedVideoType=fd.get('video_type')||'none'; const normalizedVideo = normalizeLessonVideo(originalVideoUrl, selectedVideoType); return {sort_order:Number(fd.get('sort_order')||1),icon:fd.get('icon')||'🎓',title:fd.get('title'),description:fd.get('description'),duration:fd.get('duration'),video_type:normalizedVideo.type,video_url:normalizedVideo.url,content:fd.get('content'),steps:arr(fd.get('steps')),mistakes:arr(fd.get('mistakes')),practice:fd.get('practice'),passing_score:Number(fd.get('passing_score')||settings().passing_score||70),is_published:!!fd.get('is_published')}; }
   function questionEditorHtml(q,i){ const answers=arr(q.answers); while(answers.length<3) answers.push(''); return `<div class="question-box"><label>Вопрос ${i+1}<input name="question" value="${esc(q.question||'')}"></label><label>Ответы <small>каждый ответ с новой строки</small><textarea name="answers">${esc(answers.join('\n'))}</textarea></label><label>Номер правильного ответа <small>1, 2, 3...</small><input name="correct_index" type="number" min="1" value="${Number(q.correct_index||0)+1}"></label></div>`; }
   function collectQuiz(){ return $$('.question-box').map(box=>{ const question=$('input[name="question"]',box).value.trim(); const answers=arr($('textarea[name="answers"]',box).value); const correct_index=Math.max(0,Number($('input[name="correct_index"]',box).value||1)-1); return {question,answers,correct_index}; }).filter(q=>q.question && q.answers.length>=2); }
 
@@ -1024,8 +1106,8 @@
     if(!file) { result.innerHTML = msg('Сначала выберите видеофайл.', 'warning'); return; }
     const allowed = ['video/mp4','video/webm','video/quicktime'];
     if(file.type && !allowed.includes(file.type)) { result.innerHTML = msg('Лучше загрузить видео в формате MP4, WEBM или MOV.', 'error'); return; }
-    const max = 500 * 1024 * 1024;
-    if(file.size > max) { result.innerHTML = msg('Файл слишком большой. Максимум 500 МБ для текущей настройки Storage.', 'error'); return; }
+    const max = 50 * 1024 * 1024;
+    if(file.size > max) { result.innerHTML = msg('Файл больше 50 МБ. Для бесплатного Supabase загрузите видео на YouTube с доступом по ссылке и вставьте ссылку в поле выше.', 'error'); return; }
     const old = btn?.textContent || '';
     if(btn){ btn.disabled = true; btn.textContent = 'Загружаем...'; }
     result.innerHTML = msg('Идет загрузка видео. Не закрывайте страницу.', 'warning');
@@ -1112,7 +1194,7 @@
 
   function renderAdminFiles(){
     const root=$('#tab-files'); if(!root) return;
-    root.innerHTML = `<div class="section-head"><div><h2>Видео и файлы</h2><p>Загрузите MP4, WEBM, PDF или картинку. Ссылку можно вставить в урок.</p></div><button class="secondary" id="listFilesBtn">Показать файлы</button></div><div class="notice"><b>Совет:</b> для видео лучше MP4 до 300–500 МБ, 720p или 1080p. Очень большие файлы могут долго загружаться и тормозить у учеников.</div><div class="file-upload"><form id="fileForm" class="form"><label>Выберите файл<input type="file" name="file" required accept="video/*,application/pdf,image/*"></label><button class="primary" type="submit" id="fileUploadBtn">Загрузить файл</button></form><div id="fileResult"></div><div id="fileList"></div></div>`;
+    root.innerHTML = `<div class="section-head"><div><h2>Видео и файлы</h2><p>Загрузите MP4, WEBM, PDF или картинку. Ссылку можно вставить в урок.</p></div><button class="secondary" id="listFilesBtn">Показать файлы</button></div><div class="notice"><b>Совет:</b> на бесплатном Supabase видео лучше держать до 50 МБ. Для больших уроков загрузите видео на YouTube как «Доступ по ссылке» и вставьте ссылку в урок.</div><div class="file-upload"><form id="fileForm" class="form"><label>Выберите файл<input type="file" name="file" required accept="video/*,application/pdf,image/*"></label><button class="primary" type="submit" id="fileUploadBtn">Загрузить файл</button></form><div id="fileResult"></div><div id="fileList"></div></div>`;
     $('#fileForm').onsubmit=async(e)=>{
       e.preventDefault();
       const form=e.currentTarget;

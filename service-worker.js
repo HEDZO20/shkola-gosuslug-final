@@ -1,6 +1,6 @@
 /* Школа Госуслуг — быстрый PWA-кэш.
    Кэширует только файлы сайта. Запросы Supabase идут напрямую, чтобы данные всегда были свежими. */
-const CACHE_NAME = 'sgos-stable-cache-20260724-01';
+const CACHE_NAME = 'sgos-stable-cache-20260724-02-youtube';
 const CORE_ASSETS = [
   './',
   './index.html',
