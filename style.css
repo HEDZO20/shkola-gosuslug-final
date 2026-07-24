@@ -907,3 +907,32 @@ button[disabled]::after { display: none; }
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.001ms!important;}
 }
+
+/* Стабильность и ускорение: офлайн-статус, экономия рендера, быстрые секции */
+.net-status-badge{
+  position:fixed;
+  left:50%;
+  bottom:18px;
+  transform:translateX(-50%);
+  z-index:120;
+  max-width:min(92vw,520px);
+  padding:12px 16px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.18);
+  color:#fff;
+  background:rgba(7,17,31,.92);
+  backdrop-filter:blur(14px);
+  box-shadow:0 18px 60px rgba(0,0,0,.35);
+  font-weight:700;
+  text-align:center;
+}
+.net-status-badge.offline{border-color:rgba(255,99,132,.42);}
+.net-status-badge.online{border-color:rgba(66,215,255,.42);}
+@supports (content-visibility:auto){
+  .lesson-card,.panel,.metric,.glass-lite,.material-card,.admin-tab{content-visibility:auto;contain-intrinsic-size:1px 260px;}
+}
+@media (max-width:760px){
+  .net-status-badge{bottom:94px;font-size:13px;padding:10px 13px;}
+  .video-box{border-radius:18px;}
+  .panel,.glass{box-shadow:none;}
+}

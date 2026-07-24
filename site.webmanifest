@@ -1,23 +1,31 @@
 {
   "name": "Школа Госуслуг",
   "short_name": "ГОС",
-  "description": "Пошаговое обучение работе с госуслугами",
+  "description": "Обучающий сайт Школа Госуслуг: уроки, тесты, материалы и личный кабинет.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#071123",
-  "theme_color": "#08122a",
+  "background_color": "#07111f",
+  "theme_color": "#07111f",
   "orientation": "portrait-primary",
   "icons": [
     {
       "src": "assets/icons/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     },
     {
       "src": "assets/icons/icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "assets/icons/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
     }
   ]
 }

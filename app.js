@@ -5,7 +5,7 @@
   const $ = (sel, root=document) => root.querySelector(sel);
   const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
   const page = document.body?.dataset?.page || 'home';
-  const state = { user:null, profile:null, settings:null, lessons:[], materials:[], progress:[], allProgress:[], allProfiles:[], events:[] };
+  const state = { user:null, profile:null, settings:null, lessons:[], materials:[], progress:[], allProgress:[], allProfiles:[], events:[], errors:[] };
   let selectedLessonId = null;
 
   function isTestMode(){ return sessionStorage.getItem('sg_test_mode') === '1' || new URLSearchParams(location.search).get('test') === '1'; }
@@ -33,7 +33,7 @@
   async function safePromise(promise, fallback=null){ try{ return await promise; }catch(e){ console.warn(e); return fallback; } }
 
 
-  const CACHE_VERSION = 'v8';
+  const CACHE_VERSION = 'v9_stable';
   function cacheKey(name, extra='global'){
     const project = (CFG.url || 'demo').replace(/[^a-zA-Z0-9]/g,'_').slice(-42);
     return `sg_${CACHE_VERSION}_${project}_${name}_${extra || 'global'}`;
@@ -147,6 +147,30 @@
       });
     } catch(e){ console.warn('analytics skipped', e); }
   }
+  async function trackError(action, error, metadata={}){
+    if(!sb) return;
+    try{
+      const message = error?.message || String(error || 'unknown');
+      await sb.from('site_errors').insert({
+        user_id: state.user?.id || null,
+        page,
+        action: action || 'client_error',
+        message: message.slice(0,1000),
+        metadata: {
+          ...metadata,
+          path: location.pathname,
+          search: location.search,
+          user_agent: navigator.userAgent
+        }
+      });
+    } catch(e){ console.warn('error log skipped', e); }
+  }
+  window.addEventListener('error', (event)=>{
+    trackError('js_error', event.error || event.message, {filename:event.filename, lineno:event.lineno, colno:event.colno});
+  });
+  window.addEventListener('unhandledrejection', (event)=>{
+    trackError('promise_error', event.reason || 'unhandled promise rejection', {});
+  });
   function recoveryModeRequested(){
     const search = new URLSearchParams(location.search);
     const hash = new URLSearchParams((location.hash||'').replace(/^#/,''));
@@ -311,15 +335,68 @@
 
   async function loadProgressAll(){
     try{
-      const [progressRes, profilesRes, eventsRes] = await Promise.all([
+      const [progressRes, profilesRes, eventsRes, errorsRes] = await Promise.all([
         withTimeout(sb.from('lesson_progress').select('*, profiles:user_id(email,full_name,phone), lessons:lesson_id(title,sort_order)').order('updated_at',{ascending:false}).limit(1000), 12000, 'прогресс учеников'),
         withTimeout(sb.from('profiles').select('*').order('created_at',{ascending:false}).limit(1000), 12000, 'ученики'),
-        safePromise(withTimeout(sb.from('site_events').select('*').order('created_at',{ascending:false}).limit(200), 10000, 'активность'), null)
+        safePromise(withTimeout(sb.from('site_events').select('*').order('created_at',{ascending:false}).limit(200), 10000, 'активность'), null),
+        safePromise(withTimeout(sb.from('site_errors').select('*').order('created_at',{ascending:false}).limit(80), 10000, 'ошибки сайта'), null)
       ]);
       state.allProgress=progressRes?.data||[];
       state.allProfiles=profilesRes?.data||[];
       state.events = eventsRes?.data || [];
-    }catch(e){ console.warn(e); state.allProgress=state.allProgress||[]; state.allProfiles=state.allProfiles||[]; state.events=state.events||[]; }
+      state.errors = errorsRes?.data || [];
+    }catch(e){ console.warn(e); state.allProgress=state.allProgress||[]; state.allProfiles=state.allProfiles||[]; state.events=state.events||[]; state.errors=state.errors||[]; }
+  }
+  function applyDashboardBundle(bundle){
+    if(!bundle || typeof bundle !== 'object') return false;
+    if(bundle.profile){ state.profile = bundle.profile; cacheSet('profile', state.user?.id, bundle.profile); }
+    if(Array.isArray(bundle.lessons)){ state.lessons = bundle.lessons; cacheSet('lessons_public','global',bundle.lessons); }
+    if(Array.isArray(bundle.progress)){ state.progress = bundle.progress; cacheSet('progress', state.user?.id, bundle.progress); }
+    if(Array.isArray(bundle.materials)){ state.materials = bundle.materials; cacheSet('materials_public','global',bundle.materials); }
+    return true;
+  }
+  async function loadDashboardBundle(){
+    if(!sb || !state.user) return false;
+    const cacheId = state.user.id;
+    const cached = cacheGet('dashboard_bundle', cacheId, 12000);
+    if(cached && applyDashboardBundle(cached)){
+      // Обновляем в фоне, чтобы кабинет открылся мгновенно, но данные подтянулись свежие.
+      sb.rpc('get_my_dashboard')
+        .then(({data,error})=>{ if(!error && data){ cacheSet('dashboard_bundle', cacheId, data); applyDashboardBundle(data); const root=$('#cabinetRoot'); if(page==='cabinet' && root && root.dataset.ready==='1') renderCabinet(); } })
+        .catch(e=>console.warn(e));
+      return true;
+    }
+    try{
+      const { data, error } = await withTimeout(sb.rpc('get_my_dashboard'), 8000, 'быстрые данные кабинета');
+      if(error) throw error;
+      if(!data) return false;
+      cacheSet('dashboard_bundle', cacheId, data);
+      return applyDashboardBundle(data);
+    }catch(e){
+      console.warn('dashboard rpc fallback', e);
+      trackError('dashboard_rpc_fallback', e, {});
+      return false;
+    }
+  }
+  async function loadAdminBundle(){
+    if(!sb || !state.user) return false;
+    try{
+      const { data, error } = await withTimeout(sb.rpc('get_admin_dashboard', { p_rows_limit: 1000, p_events_limit: 200 }), 12000, 'быстрые данные админки');
+      if(error) throw error;
+      if(!data) return false;
+      if(data.settings){ state.settings = {...defaultSettings(), ...data.settings}; cacheSet('settings','global',data.settings); }
+      state.lessons = Array.isArray(data.lessons) ? data.lessons : [];
+      state.materials = Array.isArray(data.materials) ? data.materials : [];
+      state.allProfiles = Array.isArray(data.profiles) ? data.profiles : [];
+      state.allProgress = Array.isArray(data.progress) ? data.progress : [];
+      state.events = Array.isArray(data.events) ? data.events : [];
+      state.errors = Array.isArray(data.errors) ? data.errors : [];
+      return true;
+    }catch(e){
+      console.warn('admin rpc fallback', e);
+      trackError('admin_rpc_fallback', e, {});
+      return false;
+    }
   }
   function pFor(lessonId){ return state.progress.find(p=>p.lesson_id===lessonId); }
   function passScore(lesson){ return Number(lesson?.passing_score || settings().passing_score || 70); }
@@ -673,8 +750,8 @@
   }
   function renderVideo(lesson){
     if(!lesson.video_url || lesson.video_type==='none') return `<div class="video-box"><div class="empty">Видео пока не добавлено. Можно изучить текст и отметить урок просмотренным.</div></div>`;
-    if(lesson.video_type==='youtube') return `<div class="video-box"><iframe src="${esc(lesson.video_url)}" allowfullscreen></iframe></div>`;
-    return `<div class="video-box"><video src="${esc(lesson.video_url)}" controls playsinline></video></div>`;
+    if(lesson.video_type==='youtube') return `<div class="video-box"><iframe src="${esc(lesson.video_url)}" loading="lazy" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>`;
+    return `<div class="video-box"><video src="${esc(lesson.video_url)}" controls playsinline preload="metadata"></video></div>`;
   }
   function lessonContentHtml(lesson){
     return `<div class="lesson-content"><h2>Конспект урока</h2><p>${String(lesson.content||'Материал урока скоро появится.').replace(/\n/g,'<br>')}</p></div>
@@ -738,10 +815,16 @@
     if(state.profile?.role === 'admin'){ location.replace('admin.html'); return; }
     if(!hasCourseAccess()){ trackEvent('cabinet_pending',{}); renderPendingCabinet(); return; }
     try{
-      await Promise.all([loadLessons(), loadProgress()]);
-      trackEvent('cabinet_open',{});
+      const usedBundle = await loadDashboardBundle();
+      if(!usedBundle) await Promise.all([loadLessons(), loadProgress()]);
+      trackEvent('cabinet_open',{fast_bundle:usedBundle});
+      const root=$('#cabinetRoot'); if(root) root.dataset.ready='1';
       renderCabinet();
-    }catch(e){ console.warn(e); const root=$('#cabinetRoot'); if(root) root.innerHTML = networkErrorHtml('Кабинет не загрузился'); }
+    }catch(e){
+      console.warn(e);
+      trackError('cabinet_load_failed', e, {});
+      const root=$('#cabinetRoot'); if(root) root.innerHTML = networkErrorHtml('Кабинет не загрузился');
+    }
   }
   function renderPendingCabinet(){
     const root=$('#cabinetRoot'); if(!root) return;
@@ -782,7 +865,18 @@
     if(state.profile?.role !== 'admin'){ $('#adminRoot').innerHTML = msg('У вашего аккаунта нет прав администратора.', 'error'); return false; }
     return true;
   }
-  async function initAdmin(){ if(!await requireAdmin()) return; await loadSettings(); await loadLessons(true); await loadMaterials(true); await loadProgressAll(); renderAdmin(); }
+  async function initAdmin(){
+    if(!await requireAdmin()) return;
+    renderFastLoading('#adminRoot','Открываем админку','Загружаем статистику и данные платформы одним быстрым пакетом.');
+    const usedBundle = await loadAdminBundle();
+    if(!usedBundle){
+      await loadSettings();
+      await loadLessons(true);
+      await loadMaterials(true);
+      await loadProgressAll();
+    }
+    renderAdmin();
+  }
   async function renderAdmin(){
     const root=$('#adminRoot');
     root.innerHTML = `<div class="page-title"><h1>Панель управления</h1><p>Уроки, файлы, ученики и внешний вид сайта — без редактирования кода.</p></div>
@@ -1119,7 +1213,7 @@
   function renderAdminActivity(){
     const root=$('#tab-activity'); if(!root) return;
     const profilesById=Object.fromEntries((state.allProfiles||[]).map(p=>[p.id,p]));
-    const names={page_view:'Просмотр страницы',cabinet_pending:'Ожидает подтверждения',student_approval_update:'Обновлен доступ ученика',course_open:'Открыл курс',lesson_open:'Открыл урок',video_watched:'Отметил видео',practice_done:'Выполнил практику',quiz_submit:'Прошел тест',cabinet_open:'Открыл кабинет',file_upload:'Загрузил файл',material_upload:'Добавил материал',lesson_save:'Сохранил урок',file_delete:'Удалил файл',material_delete:'Удалил материал'};
+    const names={page_view:'Просмотр страницы',cabinet_pending:'Ожидает подтверждения',student_approval_update:'Обновлен доступ ученика',course_open:'Открыл курс',lesson_open:'Открыл урок',video_watched:'Отметил видео',practice_done:'Выполнил практику',quiz_submit:'Прошел тест',cabinet_open:'Открыл кабинет',file_upload:'Загрузил файл',material_upload:'Добавил материал',lesson_save:'Сохранил урок',file_delete:'Удалил файл',material_delete:'Удалил материал',js_error:'Ошибка JavaScript',promise_error:'Ошибка загрузки',cabinet_load_failed:'Ошибка кабинета'};
     root.innerHTML = `<div class="section-head"><div><h2>История активности</h2><p>Последние действия учеников и администратора: входы, уроки, видео, практика, тесты и загрузки.</p></div><button class="secondary" id="refreshActivityBtn">Обновить</button></div><div class="activity-feed">${(state.events||[]).slice(0,120).map(e=>{ const pr=profilesById[e.user_id]||{}; const meta=e.metadata||{}; return `<div class="activity-item"><div><b>${esc(names[e.action]||e.action)}</b><p>${esc(pr.full_name||pr.email||'Гость')} ${meta.title?'· '+esc(meta.title):''}${meta.score!=null?' · '+meta.score+'%':''}</p></div><small>${new Date(e.created_at).toLocaleString('ru-RU')}</small></div>`; }).join('') || '<div class="empty">Активности пока нет</div>'}</div>`;
     $('#refreshActivityBtn').onclick=async()=>{await loadProgressAll(); renderAdminActivity(); renderAdminOverview();};
   }
@@ -1194,7 +1288,9 @@
       'stuck':'Остановились на уроке'
     };
     const cards=Object.entries(groups).map(([key,title])=>{ const items=data.filter(x=>x.type===key); return `<div class="glass-lite problem-card"><h3>${esc(title)}</h3><p class="big-number">${items.length}</p><div class="mini-list compact">${items.slice(0,8).map(x=>`<div class="mini-item"><span>${esc(x.student.full_name||x.student.email)}<br><small>${esc(x.note)}</small></span><div class="compact-actions">${x.type==='pending'?`<button class="success small" data-approve-student="${x.student.id}">Одобрить</button>`:`<small>${x.progress}/${x.total}</small>`}</div></div>`).join('') || '<div class="empty">Нет учеников</div>'}</div></div>`; }).join('');
-    root.innerHTML=`<div class="section-head"><div><h2>Проблемы учеников</h2><p>Здесь видно, кому может понадобиться помощь: кто ждет подтверждения, не начал курс, не прошел тест, давно не заходил или остановился на уроке.</p></div><button class="secondary" id="refreshProblems">Обновить</button></div><div class="grid-2">${cards}</div>`;
+    const errors = state.errors || [];
+    const errorsCard = `<div class="glass-lite problem-card"><h3>Ошибки сайта</h3><p class="big-number">${errors.length}</p><div class="mini-list compact">${errors.slice(0,8).map(e=>`<div class="mini-item"><span>${esc(e.action || 'ошибка')} · ${esc(e.page || '')}<br><small>${esc(e.message || '')}</small></span><small>${new Date(e.created_at).toLocaleString('ru-RU')}</small></div>`).join('') || '<div class="empty">Ошибок не зафиксировано</div>'}</div></div>`;
+    root.innerHTML=`<div class="section-head"><div><h2>Проблемы учеников</h2><p>Здесь видно, кому может понадобиться помощь: кто ждет подтверждения, не начал курс, не прошел тест, давно не заходил, остановился на уроке или столкнулся с ошибкой сайта.</p></div><button class="secondary" id="refreshProblems">Обновить</button></div><div class="grid-2">${errorsCard}${cards}</div>`;
     $('#refreshProblems').onclick=async()=>{ await loadProgressAll(); renderAdminProblems(); renderAdminStudents(); renderAdminOverview(); };
     bindStudentApprovalButtons(root);
   }
@@ -1257,5 +1353,17 @@
     $('#settingsForm').onsubmit=async(e)=>{ e.preventDefault(); const fd=new FormData(e.currentTarget); const payload={site_logo:fd.get('site_logo'),site_title:fd.get('site_title'),site_subtitle:fd.get('site_subtitle'),hero_badge:fd.get('hero_badge'),hero_title:fd.get('hero_title'),hero_highlight:fd.get('hero_highlight'),hero_text:fd.get('hero_text'),primary_button_text:fd.get('primary_button_text'),secondary_button_text:fd.get('secondary_button_text'),about_title:fd.get('about_title'),about_text:fd.get('about_text'),about_cards:arr(fd.get('about_cards')),process_title:fd.get('process_title'),process_steps:arr(fd.get('process_steps')),support_title:fd.get('support_title'),support_text:fd.get('support_text'),whatsapp_phone:fd.get('whatsapp_phone'),passing_score:Number(fd.get('passing_score')||70),theme_primary:fd.get('theme_primary'),theme_secondary:fd.get('theme_secondary'),theme_accent:fd.get('theme_accent'),site_width:Number(fd.get('site_width')||1360),footer_text:fd.get('footer_text')}; const {error}=await sb.from('site_settings').update(payload).eq('id',1); $('#settingsResult').innerHTML=error?msg(error.message,'error'):msg('Настройки сохранены. Обновите главную страницу, чтобы увидеть изменения.'); await loadSettings(); hydrateBrand(); setWhatsAppLinks(); };
   }
 
-  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+  function renderBootError(err){
+    const map = {admin:'#adminRoot',cabinet:'#cabinetRoot',course:'#courseList',lesson:'#lessonRoot',materials:'#materialsRoot',complete:'#completeRoot'};
+    const root = $(map[page] || 'main.container');
+    if(root) root.innerHTML = networkErrorHtml('Сайт не загрузился');
+  }
+  function boot(){
+    init().catch((err)=>{
+      console.error(err);
+      trackError('boot_failed', err, {page});
+      renderBootError(err);
+    });
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
