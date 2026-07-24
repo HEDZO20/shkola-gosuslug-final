@@ -32,6 +32,45 @@
   function confirmAction(text){ return window.confirm(text || 'Подтвердите действие'); }
   async function safePromise(promise, fallback=null){ try{ return await promise; }catch(e){ console.warn(e); return fallback; } }
 
+
+  const CACHE_VERSION = 'v8';
+  function cacheKey(name, extra='global'){
+    const project = (CFG.url || 'demo').replace(/[^a-zA-Z0-9]/g,'_').slice(-42);
+    return `sg_${CACHE_VERSION}_${project}_${name}_${extra || 'global'}`;
+  }
+  function cacheGet(name, extra='global', ttl=60000){
+    try{
+      const raw = sessionStorage.getItem(cacheKey(name, extra));
+      if(!raw) return null;
+      const item = JSON.parse(raw);
+      if(!item || !item.t || (Date.now() - item.t) > ttl) return null;
+      return item.v;
+    }catch(e){ return null; }
+  }
+  function cacheSet(name, extra='global', value){
+    try{ sessionStorage.setItem(cacheKey(name, extra), JSON.stringify({t:Date.now(), v:value})); }catch(e){}
+  }
+  function cacheRemove(name, extra='global'){
+    try{ sessionStorage.removeItem(cacheKey(name, extra)); }catch(e){}
+  }
+  async function withTimeout(promise, ms=9000, label='операция'){
+    let timer;
+    try{
+      return await Promise.race([
+        promise,
+        new Promise((_, reject)=>{ timer=setTimeout(()=>reject(new Error(`Долгая загрузка: ${label}`)), ms); })
+      ]);
+    } finally { if(timer) clearTimeout(timer); }
+  }
+  function renderFastLoading(selector, title='Загружаем данные', text='Открываем страницу. Если Supabase недавно был восстановлен, первая загрузка может занять немного дольше.'){
+    const root = $(selector);
+    if(!root || root.dataset.ready === '1') return;
+    root.innerHTML = `<section class="glass panel fast-loading-card"><div class="loader-dot"></div><h1>${esc(title)}</h1><p>${esc(text)}</p><div class="skeleton-lines"><span></span><span></span><span></span></div></section>`;
+  }
+  function networkErrorHtml(title='Не удалось загрузить данные'){
+    return `<section class="glass panel"><h1>${esc(title)}</h1><p class="notice error">Supabase не ответил вовремя. Обычно помогает обновить страницу через 10–20 секунд. Если проект недавно был восстановлен после паузы, первая загрузка может быть медленной.</p><div class="auth-actions"><button class="primary" onclick="location.reload()">Обновить</button><a class="secondary" href="index.html">На главную</a></div></section>`;
+  }
+
   function defaultSettings(){
     return {
       id:1,
@@ -126,12 +165,11 @@
       state.profile = {id:'demo-user', email:'demo@example.com', full_name:'Демо-ученик', role:'student', approval_status:'approved'};
       hydrateBrand(); setWhatsAppLinks(); bindCommon(); initDemoPage(); return;
     }
-    const { data } = await sb.auth.getSession();
+    const { data } = await withTimeout(sb.auth.getSession(), 8000, 'проверка входа');
     state.user = data.session?.user || null;
-    await loadSettings();
-    if(state.user) await loadProfile();
+    await Promise.all([loadSettings(), state.user ? loadProfile() : Promise.resolve(null)]);
     hydrateBrand(); setWhatsAppLinks(); bindCommon();
-    await trackEvent('page_view', { title: document.title });
+    trackEvent('page_view', { title: document.title });
     if(recoveryModeRequested()) setTimeout(()=>showAuthModal('new_password'), 50);
     if(page==='home') return initHome();
     if(page==='course') return initCourse();
@@ -173,58 +211,115 @@
 
 
   async function loadSettings(){
-    const { data, error } = await sb.from('site_settings').select('*').eq('id',1).single();
-    state.settings = {...defaultSettings(), ...(data || {})};
-    if(error) console.warn(error);
+    const cached = cacheGet('settings','global',5*60*1000);
+    if(cached){
+      state.settings = {...defaultSettings(), ...(cached || {})};
+      withTimeout(sb.from('site_settings').select('*').eq('id',1).single(), 8000, 'настройки сайта')
+        .then(({data,error})=>{ if(!error && data){ state.settings={...defaultSettings(),...data}; cacheSet('settings','global',data); hydrateBrand(); } })
+        .catch(e=>console.warn(e));
+      return state.settings;
+    }
+    try{
+      const { data, error } = await withTimeout(sb.from('site_settings').select('*').eq('id',1).single(), 9000, 'настройки сайта');
+      state.settings = {...defaultSettings(), ...(data || {})};
+      if(data) cacheSet('settings','global',data);
+      if(error) console.warn(error);
+    }catch(e){ console.warn(e); state.settings = defaultSettings(); }
+    return state.settings;
   }
   async function loadProfile(){
     if(!state.user) return null;
-    let { data } = await sb.from('profiles').select('*').eq('id',state.user.id).maybeSingle();
-    if(!data){
-      const payload = {id:state.user.id,email:state.user.email,full_name:state.user.user_metadata?.full_name || state.user.email?.split('@')[0] || 'Ученик', role:'student', approval_status:'pending'};
-      await sb.from('profiles').insert(payload);
-      data = payload;
+    const key = state.user.id;
+    const cached = cacheGet('profile', key, 20*1000);
+    if(cached){
+      state.profile = cached;
+      withTimeout(sb.from('profiles').select('id,email,full_name,phone,role,approval_status,created_at,updated_at').eq('id',state.user.id).maybeSingle(), 8000, 'профиль')
+        .then(async ({data})=>{ if(data){ state.profile=data; cacheSet('profile', key, data); hydrateBrand(); } })
+        .catch(e=>console.warn(e));
+      return cached;
     }
-    state.profile = data;
-    return data;
+    try{
+      let { data } = await withTimeout(sb.from('profiles').select('id,email,full_name,phone,role,approval_status,created_at,updated_at').eq('id',state.user.id).maybeSingle(), 9000, 'профиль');
+      if(!data){
+        const payload = {id:state.user.id,email:state.user.email,full_name:state.user.user_metadata?.full_name || state.user.email?.split('@')[0] || 'Ученик', role:'student', approval_status:'pending'};
+        await withTimeout(sb.from('profiles').insert(payload), 9000, 'создание профиля');
+        data = payload;
+      }
+      state.profile = data;
+      cacheSet('profile', key, data);
+      return data;
+    }catch(e){ console.warn(e); return state.profile; }
   }
   async function loadLessons(includeAll=false){
-    let q = sb.from('lessons').select('*').order('sort_order',{ascending:true});
-    if(!includeAll) q = q.eq('is_published',true);
-    const { data, error } = await q;
-    if(error){ console.warn(error); return []; }
-    state.lessons = data || [];
-    return state.lessons;
+    const cacheName = includeAll ? null : 'lessons_public';
+    if(cacheName){
+      const cached = cacheGet(cacheName,'global',45*1000);
+      if(cached){ state.lessons = cached; return state.lessons; }
+    }
+    try{
+      let q = sb.from('lessons').select('*').order('sort_order',{ascending:true});
+      if(!includeAll) q = q.eq('is_published',true);
+      const { data, error } = await withTimeout(q, 9000, 'уроки');
+      if(error){ console.warn(error); return state.lessons || []; }
+      state.lessons = data || [];
+      if(cacheName) cacheSet(cacheName,'global',state.lessons);
+      return state.lessons;
+    }catch(e){ console.warn(e); return state.lessons || []; }
   }
   async function loadQuestions(lessonId){
-    const { data, error } = await sb.from('quiz_questions').select('*').eq('lesson_id',lessonId).order('sort_order',{ascending:true});
-    if(error){ console.warn(error); return []; }
-    return data || [];
+    const key = String(lessonId||'');
+    const cached = cacheGet('questions', key, 45*1000);
+    if(cached) return cached;
+    try{
+      const { data, error } = await withTimeout(sb.from('quiz_questions').select('*').eq('lesson_id',lessonId).order('sort_order',{ascending:true}), 9000, 'вопросы урока');
+      if(error){ console.warn(error); return []; }
+      cacheSet('questions', key, data || []);
+      return data || [];
+    }catch(e){ console.warn(e); return []; }
   }
   async function loadMaterials(includeAll=false){
     if(!sb){ state.materials = demoMaterials(); return state.materials; }
-    let q = sb.from('materials').select('*').order('created_at',{ascending:false});
-    if(!includeAll) q = q.eq('is_published',true);
-    const { data, error } = await q;
-    if(error){ console.warn(error); state.materials=[]; return []; }
-    state.materials = data || [];
-    return state.materials;
+    const cacheName = includeAll ? null : 'materials_public';
+    if(cacheName){
+      const cached = cacheGet(cacheName,'global',45*1000);
+      if(cached){ state.materials = cached; return state.materials; }
+    }
+    try{
+      let q = sb.from('materials').select('*').order('created_at',{ascending:false});
+      if(!includeAll) q = q.eq('is_published',true);
+      const { data, error } = await withTimeout(q, 9000, 'материалы');
+      if(error){ console.warn(error); return state.materials || []; }
+      state.materials = data || [];
+      if(cacheName) cacheSet(cacheName,'global',state.materials);
+      return state.materials;
+    }catch(e){ console.warn(e); return state.materials || []; }
   }
 
   async function loadProgress(userId=state.user?.id){
     if(!userId) return [];
-    const { data, error } = await sb.from('lesson_progress').select('*').eq('user_id',userId);
-    if(error){ console.warn(error); return []; }
-    state.progress = data || [];
-    return state.progress;
+    const key = String(userId);
+    const cached = cacheGet('progress', key, 15*1000);
+    if(cached){ state.progress = cached; return state.progress; }
+    try{
+      const { data, error } = await withTimeout(sb.from('lesson_progress').select('*').eq('user_id',userId), 9000, 'прогресс');
+      if(error){ console.warn(error); return state.progress || []; }
+      state.progress = data || [];
+      cacheSet('progress', key, state.progress);
+      return state.progress;
+    }catch(e){ console.warn(e); return state.progress || []; }
   }
+
   async function loadProgressAll(){
-    const {data}=await sb.from('lesson_progress').select('*, profiles:user_id(email,full_name,phone), lessons:lesson_id(title,sort_order)').order('updated_at',{ascending:false});
-    state.allProgress=data||[];
-    const {data:profiles}=await sb.from('profiles').select('*').order('created_at',{ascending:false});
-    state.allProfiles=profiles||[];
-    const ev = await safePromise(sb.from('site_events').select('*').order('created_at',{ascending:false}).limit(300), null);
-    state.events = ev?.data || [];
+    try{
+      const [progressRes, profilesRes, eventsRes] = await Promise.all([
+        withTimeout(sb.from('lesson_progress').select('*, profiles:user_id(email,full_name,phone), lessons:lesson_id(title,sort_order)').order('updated_at',{ascending:false}).limit(1000), 12000, 'прогресс учеников'),
+        withTimeout(sb.from('profiles').select('*').order('created_at',{ascending:false}).limit(1000), 12000, 'ученики'),
+        safePromise(withTimeout(sb.from('site_events').select('*').order('created_at',{ascending:false}).limit(200), 10000, 'активность'), null)
+      ]);
+      state.allProgress=progressRes?.data||[];
+      state.allProfiles=profilesRes?.data||[];
+      state.events = eventsRes?.data || [];
+    }catch(e){ console.warn(e); state.allProgress=state.allProgress||[]; state.allProfiles=state.allProfiles||[]; state.events=state.events||[]; }
   }
   function pFor(lessonId){ return state.progress.find(p=>p.lesson_id===lessonId); }
   function passScore(lesson){ return Number(lesson?.passing_score || settings().passing_score || 70); }
@@ -492,8 +587,10 @@
     root.innerHTML = (state.materials||[]).slice(0,6).map(materialCardHtml).join('') || `<div class="empty">Материалы появятся после добавления в панели управления.</div>`;
   }
   async function initMaterials(){
+    renderFastLoading('#materialsRoot','Загружаем материалы','Открываем библиотеку и поиск.');
     if(!await requireApprovedStudent('#materialsRoot')) return;
-    await loadLessons(); await loadMaterials(); renderMaterialsPage();
+    try{ await Promise.all([loadLessons(), loadMaterials()]); renderMaterialsPage(); }
+    catch(e){ console.warn(e); const root=$('#materialsRoot'); if(root) root.innerHTML = networkErrorHtml('Материалы не загрузились'); }
   }
   function renderMaterialsPage(){
     const root = $('#materialsRoot'); if(!root) return;
@@ -524,14 +621,17 @@
     return true;
   }
   async function initCourse(){
+    const list=$('#courseList'); if(list) list.innerHTML = `<div class="glass panel fast-loading-card"><div class="loader-dot"></div><h2>Открываем курс</h2><p>Загружаем уроки и ваш прогресс.</p><div class="skeleton-lines"><span></span><span></span><span></span></div></div>`;
     if(!await requireStudent()) return;
     const test = isTestMode() && state.profile?.role === 'admin';
     if(state.profile?.role==='admin' && !test){ location.replace('admin.html'); return; }
     if(!test && !hasCourseAccess()){ renderApprovalPending('#courseList'); const side=$('#courseSide'); if(side) side.innerHTML=''; return; }
-    await loadLessons(test); await loadMaterials(test);
-    await trackEvent('course_open',{});
-    if(test) state.progress = loadTestProgress(); else await loadProgress();
-    hydrateCourseHeader(); renderCourse();
+    try{
+      if(test){ await Promise.all([loadLessons(test), loadMaterials(test)]); state.progress = loadTestProgress(); }
+      else await Promise.all([loadLessons(test), loadMaterials(test), loadProgress()]);
+      trackEvent('course_open',{});
+      hydrateCourseHeader(); renderCourse();
+    }catch(e){ console.warn(e); if(list) list.innerHTML = networkErrorHtml('Курс не загрузился'); }
   }
   function hydrateCourseHeader(){ const n=$('#studentName'); if(n) n.textContent=state.profile?.full_name || state.user.email; }
   function renderCourse(){
@@ -557,15 +657,19 @@
   }
 
   async function initLesson(){
+    renderFastLoading('#lessonRoot','Открываем урок','Загружаем видео, текст, тест и прогресс.');
     if(!await requireStudent()) return;
     const test = isTestMode() && state.profile?.role === 'admin';
     if(state.profile?.role==='admin' && !test){ location.replace('admin.html'); return; }
     if(!test && !hasCourseAccess()){ renderApprovalPending('#lessonRoot'); return; }
-    await loadLessons(test); if(test) state.progress = loadTestProgress(); else await loadProgress();
-    const id=getQuery('id'); const idx=state.lessons.findIndex(l=>l.id===id); const lesson=state.lessons[idx];
-    if(!lesson) return $('#lessonRoot').innerHTML = msg('Урок не найден или пока скрыт.', 'error');
-    if(!isUnlocked(idx)) return $('#lessonRoot').innerHTML = msg('Этот урок пока закрыт. Сначала завершите предыдущий урок.', 'warning') + `<p><a class="secondary" href="course.html">Вернуться к курсу</a></p>`;
-    const questions = await loadQuestions(id); await trackEvent('lesson_open',{lesson_id:id,title:lesson.title}); renderLesson(lesson, idx, questions);
+    try{
+      if(test){ await loadLessons(test); state.progress = loadTestProgress(); }
+      else await Promise.all([loadLessons(test), loadProgress()]);
+      const id=getQuery('id'); const idx=state.lessons.findIndex(l=>l.id===id); const lesson=state.lessons[idx];
+      if(!lesson) return $('#lessonRoot').innerHTML = msg('Урок не найден или пока скрыт.', 'error');
+      if(!isUnlocked(idx)) return $('#lessonRoot').innerHTML = msg('Этот урок пока закрыт. Сначала завершите предыдущий урок.', 'warning') + `<p><a class="secondary" href="course.html">Вернуться к курсу</a></p>`;
+      const questions = await loadQuestions(id); trackEvent('lesson_open',{lesson_id:id,title:lesson.title}); renderLesson(lesson, idx, questions);
+    }catch(e){ console.warn(e); const root=$('#lessonRoot'); if(root) root.innerHTML = networkErrorHtml('Урок не загрузился'); }
   }
   function renderVideo(lesson){
     if(!lesson.video_url || lesson.video_type==='none') return `<div class="video-box"><div class="empty">Видео пока не добавлено. Можно изучить текст и отметить урок просмотренным.</div></div>`;
@@ -587,19 +691,19 @@
       <div class="lesson-actions"><button id="watchedBtn" class="${watched?'success':'primary'}" type="button">${watched?'✅ Видео отмечено':'Я посмотрел видео'}</button><button id="practiceBtn" class="${practiceDone?'success':'secondary'}" type="button">${practiceDone?'✅ Практика выполнена':'Я выполнил практику'}</button><a class="ghost-btn whatsapp-link" href="${whatsappUrl('Здравствуйте! У меня вопрос по уроку: '+lesson.title)}" target="_blank">Задать вопрос по уроку</a></div>
       ${lessonContentHtml(lesson)}<h2>Ваш прогресс по уроку</h2>${progressChecklistHtml(lesson)}<h2>Тест после урока</h2><div id="quizBox"></div></div>
       <aside class="glass panel sidebar-sticky"><h3>Условие открытия следующего урока</h3><p>1. Отметить просмотр видео.</p><p>2. Выполнить практику.</p><p>3. Пройти тест минимум на <b>${passScore(lesson)}%</b>.</p><div class="progressbar"><span style="width:${st.percent}%"></span></div>${progressChecklistHtml(lesson)}<p>${isComplete(lesson)?'Урок завершен ✅':'Урок еще не завершен'}</p></aside></div>`;
-    $('#watchedBtn').onclick=async()=>{ await saveProgress(lesson.id,{video_watched:true}); await trackEvent('video_watched',{lesson_id:lesson.id,title:lesson.title}); location.reload(); };
-    $('#practiceBtn').onclick=async()=>{ await saveProgress(lesson.id,{practice_done:true}); await trackEvent('practice_done',{lesson_id:lesson.id,title:lesson.title}); location.reload(); };
+    $('#watchedBtn').onclick=async()=>{ await saveProgress(lesson.id,{video_watched:true}); trackEvent('video_watched',{lesson_id:lesson.id,title:lesson.title}); location.reload(); };
+    $('#practiceBtn').onclick=async()=>{ await saveProgress(lesson.id,{practice_done:true}); trackEvent('practice_done',{lesson_id:lesson.id,title:lesson.title}); location.reload(); };
     renderQuiz(lesson, questions);
   }
   function renderQuiz(lesson, questions){
     const root=$('#quizBox'); if(!root) return;
-    if(!questions.length){ root.innerHTML = msg('Вопросы теста пока не добавлены. Отметьте видео просмотренным, чтобы завершить урок.', 'warning') + `<button class="primary" id="completeNoQuiz">Завершить урок</button>`; $('#completeNoQuiz').onclick=async()=>{ await saveProgress(lesson.id,{video_watched:true,practice_done:true,quiz_score:100}); await trackEvent('lesson_complete_no_quiz',{lesson_id:lesson.id,title:lesson.title}); location.href='course.html'; }; return; }
+    if(!questions.length){ root.innerHTML = msg('Вопросы теста пока не добавлены. Отметьте видео просмотренным, чтобы завершить урок.', 'warning') + `<button class="primary" id="completeNoQuiz">Завершить урок</button>`; $('#completeNoQuiz').onclick=async()=>{ await saveProgress(lesson.id,{video_watched:true,practice_done:true,quiz_score:100}); trackEvent('lesson_complete_no_quiz',{lesson_id:lesson.id,title:lesson.title}); location.href='course.html'; }; return; }
     root.innerHTML = `<form id="quizForm">${questions.map((q,qi)=>`<div class="quiz-item"><h3>${qi+1}. ${esc(q.question)}</h3><div class="quiz-answers">${arr(q.answers).map((a,ai)=>`<label><input type="radio" required name="q${qi}" value="${ai}">${esc(a)}</label>`).join('')}</div></div>`).join('')}<button class="primary" type="submit">Проверить тест</button></form><div id="quizResult"></div>`;
     $('#quizForm').onsubmit=async(e)=>{
       e.preventDefault(); let ok=0; const fd=new FormData(e.currentTarget); questions.forEach((q,qi)=>{ if(Number(fd.get('q'+qi))===Number(q.correct_index)) ok++; });
       const score = Math.round(ok/questions.length*100); const complete = score>=passScore(lesson) && !!(pFor(lesson.id)||{}).practice_done;
       await saveProgress(lesson.id,{video_watched:true,quiz_score:score});
-      await trackEvent('quiz_submit',{lesson_id:lesson.id,title:lesson.title,score,complete});
+      trackEvent('quiz_submit',{lesson_id:lesson.id,title:lesson.title,score,complete});
       $('#quizResult').innerHTML = complete ? msg(`Отлично! Результат ${score}%. Следующий урок открыт.`) + `<p><a class="primary" href="course.html">К списку уроков</a></p>` : msg(score>=passScore(lesson) ? `Результат ${score}%. Осталось отметить практику, чтобы завершить урок.` : `Результат ${score}%. Нужно минимум ${passScore(lesson)}%. Попробуйте еще раз.`, score>=passScore(lesson)?'warning':'error');
     };
   }
@@ -623,11 +727,22 @@
       else state.progress.push(payload);
       return;
     }
-    const { error } = await sb.from('lesson_progress').upsert(payload,{onConflict:'user_id,lesson_id'});
+    const { error } = await withTimeout(sb.from('lesson_progress').upsert(payload,{onConflict:'user_id,lesson_id'}), 9000, 'сохранение прогресса');
     if(error) alert(error.message);
+    else { cacheRemove('progress', state.user.id); }
   }
 
-  async function initCabinet(){ if(!await requireStudent()) return; if(state.profile?.role === 'admin'){ location.replace('admin.html'); return; } if(!hasCourseAccess()){ await trackEvent('cabinet_pending',{}); renderPendingCabinet(); return; } await loadLessons(); await loadProgress(); await trackEvent('cabinet_open',{}); renderCabinet(); }
+  async function initCabinet(){
+    renderFastLoading('#cabinetRoot','Открываем личный кабинет','Загружаем только нужные данные: профиль, уроки и ваш прогресс.');
+    if(!await requireStudent()) return;
+    if(state.profile?.role === 'admin'){ location.replace('admin.html'); return; }
+    if(!hasCourseAccess()){ trackEvent('cabinet_pending',{}); renderPendingCabinet(); return; }
+    try{
+      await Promise.all([loadLessons(), loadProgress()]);
+      trackEvent('cabinet_open',{});
+      renderCabinet();
+    }catch(e){ console.warn(e); const root=$('#cabinetRoot'); if(root) root.innerHTML = networkErrorHtml('Кабинет не загрузился'); }
+  }
   function renderPendingCabinet(){
     const root=$('#cabinetRoot'); if(!root) return;
     const blocked = approvalStatus() === 'blocked';
@@ -729,7 +844,7 @@
         const lesson = state.lessons.find(x => x.id === btn.dataset.deleteLesson);
         if(!lesson) return;
         if(confirmAction(`Удалить урок «${lesson.title}» окончательно? Вместе с ним удалятся вопросы теста и прогресс по этому уроку.`)){
-          await trackEvent('lesson_delete',{lesson_id:lesson.id,title:lesson.title});
+          trackEvent('lesson_delete',{lesson_id:lesson.id,title:lesson.title});
           const { error } = await sb.from('lessons').delete().eq('id', lesson.id);
           if(error){ $('#lessonFormBox').innerHTML = msg('Не удалось удалить урок: '+error.message,'error'); return; }
           if(selectedLessonId === lesson.id) selectedLessonId = null;
@@ -790,14 +905,14 @@
     $('#addQuestionBtn').onclick=()=>{ const idx=$$('.question-box').length; $('#quizEditor').insertAdjacentHTML('beforeend', questionEditorHtml({question:'',answers:['','',''],correct_index:0},idx)); };
     $('#previewLessonBtn').onclick=()=>{ const preview=lessonFormPayload(new FormData($('#lessonForm'))); $('#lessonPreviewAdmin').innerHTML=`<div class="preview-box"><h3>Предпросмотр урока</h3><h2>${esc(preview.icon)} ${esc(preview.title||'Без названия')}</h2><p>${esc(preview.description||'')}</p>${lessonContentHtml(preview)}</div>`; };
     const previewAsStudent=$('#previewAsStudentBtn'); if(previewAsStudent) previewAsStudent.onclick=()=>{ enableTestMode(); location.href='lesson.html?id='+lesson.id+'&test=1'; };
-    const togglePublish=$('#togglePublishBtn'); if(togglePublish) togglePublish.onclick=async()=>{ const next=!lesson.is_published; await sb.from('lessons').update({is_published:next}).eq('id',lesson.id); await trackEvent(next?'lesson_publish':'lesson_hide',{lesson_id:lesson.id,title:lesson.title}); await loadLessons(true); await renderAdminLessons(); renderAdminOverview(); renderAdminProblems(); }; 
-    if($('#deleteLessonBtn')) $('#deleteLessonBtn').onclick=async()=>{ if(confirmAction('Удалить урок окончательно? Вместе с ним удалятся вопросы теста и прогресс по этому уроку.')){ await trackEvent('lesson_delete',{lesson_id:lesson.id,title:lesson.title}); await sb.from('lessons').delete().eq('id',lesson.id); selectedLessonId=null; await loadLessons(true); await renderAdminLessons(); renderAdminOverview(); } };
+    const togglePublish=$('#togglePublishBtn'); if(togglePublish) togglePublish.onclick=async()=>{ const next=!lesson.is_published; await sb.from('lessons').update({is_published:next}).eq('id',lesson.id); trackEvent(next?'lesson_publish':'lesson_hide',{lesson_id:lesson.id,title:lesson.title}); await loadLessons(true); await renderAdminLessons(); renderAdminOverview(); renderAdminProblems(); }; 
+    if($('#deleteLessonBtn')) $('#deleteLessonBtn').onclick=async()=>{ if(confirmAction('Удалить урок окончательно? Вместе с ним удалятся вопросы теста и прогресс по этому уроку.')){ trackEvent('lesson_delete',{lesson_id:lesson.id,title:lesson.title}); await sb.from('lessons').delete().eq('id',lesson.id); selectedLessonId=null; await loadLessons(true); await renderAdminLessons(); renderAdminOverview(); } };
     $('#lessonForm').onsubmit=async(e)=>{
       e.preventDefault(); const payload=lessonFormPayload(new FormData(e.currentTarget)); let saved;
       if(lesson){ const {data,error}=await sb.from('lessons').update(payload).eq('id',lesson.id).select().single(); if(error) return $('#lessonSaveResult').innerHTML=msg(error.message,'error'); saved=data; }
       else { const {data,error}=await sb.from('lessons').insert(payload).select().single(); if(error) return $('#lessonSaveResult').innerHTML=msg(error.message,'error'); saved=data; }
       const quiz = collectQuiz(); await sb.from('quiz_questions').delete().eq('lesson_id',saved.id); if(quiz.length) await sb.from('quiz_questions').insert(quiz.map((q,i)=>({...q,lesson_id:saved.id,sort_order:i+1})));
-      selectedLessonId=saved.id; await loadLessons(true); await trackEvent('lesson_save',{lesson_id:saved.id,title:saved.title}); $('#lessonSaveResult').innerHTML=msg('Урок сохранен. Изменения сразу доступны на сайте.'); await renderAdminLessons(); renderAdminOverview();
+      selectedLessonId=saved.id; await loadLessons(true); trackEvent('lesson_save',{lesson_id:saved.id,title:saved.title}); $('#lessonSaveResult').innerHTML=msg('Урок сохранен. Изменения сразу доступны на сайте.'); await renderAdminLessons(); renderAdminOverview();
     };
   }
   function lessonFormPayload(fd){ const videoUrl=String(fd.get('video_url')||'').trim(); let videoType=fd.get('video_type')||'none'; if(videoUrl && videoType==='none') videoType = /youtube|youtu\.be|rutube/i.test(videoUrl) ? 'youtube' : 'external'; return {sort_order:Number(fd.get('sort_order')||1),icon:fd.get('icon')||'🎓',title:fd.get('title'),description:fd.get('description'),duration:fd.get('duration'),video_type:videoType,video_url:videoUrl,content:fd.get('content'),steps:arr(fd.get('steps')),mistakes:arr(fd.get('mistakes')),practice:fd.get('practice'),passing_score:Number(fd.get('passing_score')||settings().passing_score||70),is_published:!!fd.get('is_published')}; }
@@ -833,7 +948,7 @@
       const typeSelect = $('#videoTypeSelect', root) || $('select[name="video_type"]', root);
       if(urlInput) urlInput.value = data.publicUrl;
       if(typeSelect) typeSelect.value = 'file';
-      await trackEvent('lesson_video_upload',{name:file.name,size:file.size,path});
+      trackEvent('lesson_video_upload',{name:file.name,size:file.size,path});
       result.innerHTML = msg('Видео загружено. Ссылка вставлена в урок. Теперь нажмите «Сохранить урок».') + `<input value="${esc(data.publicUrl)}" onclick="this.select()">`;
     } catch(err){
       result.innerHTML = msg('Не удалось загрузить видео. Проверьте интернет и настройки Supabase Storage.', 'error');
@@ -895,7 +1010,7 @@
 
     const {error} = await sb.storage.from('lesson-files').remove([path]);
     if(error){ alert('Файл не удалился: ' + error.message); return false; }
-    await trackEvent('file_delete', {path, materials: linkedMaterials.length, lessons: linkedLessons.length});
+    trackEvent('file_delete', {path, materials: linkedMaterials.length, lessons: linkedLessons.length});
     await loadLessons(true);
     await loadMaterials(true);
     return true;
@@ -920,7 +1035,7 @@
         const {error}=await sb.storage.from('lesson-files').upload(path,file,{upsert:false,contentType:file.type||undefined,cacheControl:'3600'});
         if(error){ result.innerHTML=msg(`Файл не загрузился: ${esc(error.message)}. Проверьте свежий setup.sql, bucket lesson-files и роль admin.`, 'error'); return; }
         const {data}=sb.storage.from('lesson-files').getPublicUrl(path);
-        await trackEvent('file_upload',{path,size:file.size,type:file.type});
+        trackEvent('file_upload',{path,size:file.size,type:file.type});
         result.innerHTML=`${msg('Файл загружен. Скопируйте ссылку ниже.')}<input value="${esc(data.publicUrl)}" onclick="this.select()">`;
         form.reset(); await listFiles();
       } catch(err){ result.innerHTML=msg('Ошибка загрузки. Проверьте интернет и Supabase Storage.', 'error'); }
@@ -976,7 +1091,7 @@
         if(!confirmAction(`Удалить материал «${material.title}» из библиотеки?`)) return;
         const {error}=await sb.from('materials').delete().eq('id',material.id);
         if(error) return alert(error.message);
-        await trackEvent('material_delete',{id:material.id,title:material.title});
+        trackEvent('material_delete',{id:material.id,title:material.title});
         await loadMaterials(true); renderMaterialsAdminList();
       }
     });
@@ -996,7 +1111,7 @@
       const payload={title:fd.get('title'),description:fd.get('description'),lesson_id:fd.get('lesson_id')||null,file_url:data.publicUrl,file_path:path,file_type:file.type||'file',is_published:!!fd.get('is_published')};
       const res=await sb.from('materials').insert(payload).select().single();
       if(res.error){ result.innerHTML=msg(res.error.message,'error'); return; }
-      await trackEvent('material_upload',{title:payload.title,path,size:file.size,type:file.type});
+      trackEvent('material_upload',{title:payload.title,path,size:file.size,type:file.type});
       await loadMaterials(true); form.reset(); renderMaterialsAdminList(); result.innerHTML=msg('Материал добавлен в библиотеку.');
     }catch(err){ result.innerHTML=msg('Ошибка загрузки материала. Проверьте Storage и права admin.','error'); }
     finally{ btn.disabled=false; btn.textContent=old; }
@@ -1029,7 +1144,7 @@
     if(status!=='approved'){ payload.approved_at=null; payload.approved_by=null; }
     const {error}=await sb.from('profiles').update(payload).eq('id',id).neq('role','admin');
     if(error){ alert(error.message); return; }
-    await trackEvent('student_approval_update',{student_id:id,status});
+    trackEvent('student_approval_update',{student_id:id,status});
     await loadProgressAll(); renderAdminStudents(); renderAdminOverview(); renderAdminProblems();
   }
   function bindStudentApprovalButtons(root){
@@ -1098,7 +1213,7 @@
     const materialsRes=await sb.from('materials').select('*').order('created_at',{ascending:false});
     const backup={version:3,exported_at:new Date().toISOString(),settings:settingsRes.data||settings(),lessons:lessonsRes.data||[],questions:quizRes.data||[],materials:materialsRes.data||[]};
     downloadFile(`shkola-gosuslug-backup-${new Date().toISOString().slice(0,10)}.json`, JSON.stringify(backup,null,2));
-    await trackEvent('backup_export',{lessons:backup.lessons.length,questions:backup.questions.length});
+    trackEvent('backup_export',{lessons:backup.lessons.length,questions:backup.questions.length});
     result.innerHTML=msg('Резервная копия скачана.');
   }
   async function importBackup(e){
@@ -1119,7 +1234,7 @@
         for(const id of lessonIds){ await sb.from('quiz_questions').delete().eq('lesson_id',id); }
         if(backup.questions.length) await sb.from('quiz_questions').insert(backup.questions);
       }
-      await trackEvent('backup_import',{lessons:backup.lessons.length,questions:backup.questions?.length||0});
+      trackEvent('backup_import',{lessons:backup.lessons.length,questions:backup.questions?.length||0});
       await loadSettings(); await loadLessons(true); await loadProgressAll();
       renderAdminOverview(); await renderAdminLessons(); renderAdminStudents(); renderAdminProblems(); renderAdminSettings();
       result.innerHTML=msg('Импорт завершен. Проверьте уроки и настройки.');
