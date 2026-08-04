@@ -1173,7 +1173,7 @@
       const label = main.provider === 'youtube' ? 'YouTube' : main.provider === 'rutube' ? 'Rutube' : main.provider === 'vk' ? 'VK Видео' : main.type === 'file' ? 'Файл' : 'Ссылка';
       return `<div class="lesson-video-admin-status"><span class="status done">🎬 ${esc(label)}</span><span class="hint">Основное видео добавлено.</span></div>`;
     }
-    return `<div class="lesson-video-admin-status"><span class="status lock">Видео не добавлено</span><span class="hint">Можно вставить одну или несколько ссылок VK/YouTube/Rutube, iframe-код VK или загрузить MP4.</span></div>`;
+    return `<div class="lesson-video-admin-status"><span class="status lock">Видео не добавлено</span><span class="hint">Можно вставить ссылки VK/YouTube/Rutube или загрузить сразу несколько MP4-файлов прямо в этот урок.</span></div>`;
   }
 
   async function renderAdminLessons(){
@@ -1257,8 +1257,20 @@
       <label>Несколько видео в одном уроке <small>каждое видео с новой строки. Можно просто ссылку или так: Название | ссылка</small><textarea name="video_parts" id="videoPartsInput" placeholder="Введение | https://vkvideo.ru/video-123456_789012345
 Практика | https://youtu.be/xxxx
 Итог | https://rutube.ru/video/xxxx/">${esc(videoPartsToText(lesson?.video_parts))}</textarea></label>
-      <div class="notice compact-note"><b>Как лучше делать:</b> если видео большое, загрузите его в группу ВК и вставьте ссылку сюда. Тогда заказчик просто добавляет ссылки, а ученики смотрят все видео внутри одного урока.</div>
-      <div class="upload-helper simplified-upload"><div><b>Загрузить MP4-файлы до 50 МБ</b><p class="hint">Можно выбрать сразу несколько MP4-файлов. Они автоматически добавятся в список видео этого урока. Большие файлы лучше хранить в VK Видео, YouTube или Rutube.</p></div><div class="upload-row"><input type="file" id="lessonVideoFile" accept="video/mp4,video/webm,video/quicktime" multiple><button class="secondary" type="button" id="uploadLessonVideo">Загрузить выбранные видео</button></div><div id="lessonUploadResult"></div></div>
+      <div class="notice compact-note"><b>Как лучше делать:</b> если видео большое, загрузите его в группу ВК и вставьте ссылку сюда. Если видео до 50 МБ — можно загрузить прямо с компьютера ниже. Все выбранные файлы попадут в этот же урок.</div>
+      <div class="upload-helper simplified-upload multi-upload-box">
+        <div>
+          <b>Загрузить несколько видео прямо в этот урок</b>
+          <p class="hint">Выберите сразу 2, 3, 5 или больше видеофайлов. Сайт загрузит их по очереди в Supabase и сам добавит в список «Несколько видео в одном уроке».</p>
+          <p class="hint"><b>Важно:</b> каждый отдельный файл должен быть до 50 МБ. Большие видео загружайте в VK Видео и вставляйте ссылку.</p>
+        </div>
+        <div class="upload-row">
+          <input type="file" id="lessonVideoFile" accept="video/mp4,video/webm,video/quicktime" multiple>
+          <button class="primary" type="button" id="uploadLessonVideo">Загрузить видео в этот урок</button>
+        </div>
+        <div class="hint">Можно выделить сразу несколько файлов в окне выбора: удерживайте Ctrl или просто выделите пачку видео.</div>
+        <div id="lessonUploadResult"></div>
+      </div>
       <label class="small-select">Тип основного видео<select name="video_type" id="videoTypeSelect"><option value="none">Без основного видео</option><option value="file">Загруженное видео</option><option value="youtube">Встроенное видео YouTube/Rutube/VK</option><option value="external">Прямая ссылка</option></select></label>
 
       <h3>3. Материал урока</h3>
@@ -1378,15 +1390,11 @@ ${line}` : line;
       const typeSelect = $('#videoTypeSelect', root) || $('select[name="video_type"]', root);
       const partsInput = $('#videoPartsInput', root);
       if(typeSelect) typeSelect.value = 'file';
-      if(uploaded.length === 1 && urlInput && !String(partsInput?.value || '').trim()){
-        urlInput.value = uploaded[0].url;
-        result.innerHTML = msg('Видео загружено. Ссылка вставлена в урок. Теперь нажмите «Сохранить урок».') + `<input value="${esc(uploaded[0].url)}" onclick="this.select()">`;
-      } else {
-        const existing = normalizeVideoParts(partsInput?.value || '');
-        const all = sortVideoParts(existing.concat(uploaded));
-        if(partsInput) partsInput.value = all.map((p,i)=>`${p.title || ('Часть '+String(i+1).padStart(2,'0'))} | ${p.url}`).join('\n');
-        result.innerHTML = msg(`Загружено видео: ${uploaded.length}. Они добавлены в поле «Несколько видео». Теперь нажмите «Сохранить урок».`);
-      }
+      const existing = normalizeVideoParts(partsInput?.value || '');
+      const all = sortVideoParts(existing.concat(uploaded));
+      if(partsInput) partsInput.value = all.map((p,i)=>`${p.title || ('Видео '+String(i+1).padStart(2,'0'))} | ${p.url}`).join('\n');
+      if(urlInput && !String(urlInput.value || '').trim()) urlInput.value = '';
+      result.innerHTML = msg(`Загружено видео: ${uploaded.length}. Все выбранные файлы добавлены в этот урок. Теперь обязательно нажмите «Сохранить урок».`);
     } catch(err){
       console.warn(err);
       result.innerHTML = msg('Не удалось загрузить видео. Проверьте интернет и настройки Supabase Storage.', 'error');
