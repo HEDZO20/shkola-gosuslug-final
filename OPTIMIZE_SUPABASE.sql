@@ -179,3 +179,8 @@ end;
 $$;
 
 grant execute on function public.get_admin_dashboard(int, int) to authenticated;
+
+
+-- Поддержка нескольких видео/частей в одном уроке.
+alter table public.lessons add column if not exists video_parts jsonb not null default '[]'::jsonb;
+create index if not exists idx_lessons_published_sort on public.lessons(is_published, sort_order);

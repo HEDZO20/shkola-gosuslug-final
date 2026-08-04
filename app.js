@@ -28,6 +28,22 @@
   function todayRu(){ return new Date().toLocaleDateString('ru-RU'); }
   function shortId(id=''){ return String(id).replace(/-/g,'').slice(0,10).toUpperCase(); }
   function prettyBytes(bytes=0){ const n=Number(bytes||0); if(n<1024) return n+' Б'; if(n<1024*1024) return (n/1024).toFixed(1)+' КБ'; if(n<1024*1024*1024) return (n/1024/1024).toFixed(1)+' МБ'; return (n/1024/1024/1024).toFixed(2)+' ГБ'; }
+  function naturalVideoNumber(value='', fallback=999999){
+    const text = String(value || '');
+    const part = text.match(/(?:part|часть|chast|segment|seg|_)(?:_|-|\s)*(\d{1,5})/i) || text.match(/(\d{1,5})(?=\D*$)/);
+    return part ? Number(part[1]) : fallback;
+  }
+  function cleanVideoTitle(name='', index=0){
+    const base = String(name || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+    const n = naturalVideoNumber(base, index + 1);
+    if(/part|часть|segment|seg/i.test(base)) return `Часть ${String(n).padStart(2,'0')}`;
+    return base || `Часть ${index + 1}`;
+  }
+  function sortVideoParts(parts){
+    return (parts || []).map((p,i)=>({...p, __i:i, __n:Number(p.order || p.sort_order || naturalVideoNumber((p.title || '') + ' ' + (p.url || ''), 999999))}))
+      .sort((a,b)=>(a.__n-b.__n) || (a.__i-b.__i))
+      .map(({__i,__n,...p})=>p);
+  }
   function downloadFile(name, text, type='application/json'){ const blob=new Blob([text],{type}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000); }
   function confirmAction(text){ return window.confirm(text || 'Подтвердите действие'); }
   async function safePromise(promise, fallback=null){ try{ return await promise; }catch(e){ console.warn(e); return fallback; } }
@@ -84,6 +100,40 @@
       return id ? `https://rutube.ru/play/embed/${id}/` : '';
     }catch(e){ return ''; }
   }
+
+  function vkEmbedUrl(value=''){
+    const raw = extractIframeSrc(value);
+    if(!raw) return '';
+    try{
+      const u = new URL(raw, location.href);
+      const host = u.hostname.replace(/^www\./,'').replace(/^m\./,'');
+      const isVkHost = host === 'vk.com' || host === 'vk.ru' || host.endsWith('.vk.com') || host === 'vkvideo.ru' || host.endsWith('.vkvideo.ru');
+      if(!isVkHost) return '';
+
+      // Если админ вставил готовый iframe-код или embed-ссылку из VK — используем ее как есть.
+      if(/\/video_ext\.php$/i.test(u.pathname)){
+        if(!u.searchParams.get('autoplay')) u.searchParams.set('autoplay','0');
+        return u.toString().replace('https://vk.com/video_ext.php', 'https://vkvideo.ru/video_ext.php');
+      }
+
+      const full = decodeURIComponent(raw);
+      const z = u.searchParams.get('z') ? decodeURIComponent(u.searchParams.get('z')) : '';
+      const candidates = [full, u.pathname, z].filter(Boolean).join(' ');
+      const m = candidates.match(/video(-?\d+)_(\d+)/i);
+      if(!m) return '';
+      const oid = m[1];
+      const id = m[2];
+      const embed = new URL('https://vkvideo.ru/video_ext.php');
+      embed.searchParams.set('oid', oid);
+      embed.searchParams.set('id', id);
+      embed.searchParams.set('hd', u.searchParams.get('hd') || '2');
+      embed.searchParams.set('autoplay', '0');
+      const hash = u.searchParams.get('hash') || u.searchParams.get('list') || '';
+      if(hash && /^[a-zA-Z0-9_-]{4,128}$/.test(hash)) embed.searchParams.set('hash', hash);
+      return embed.toString();
+    }catch(e){ return ''; }
+  }
+
   function directVideoUrl(value=''){
     const raw = extractIframeSrc(value);
     return /\.(mp4|webm|mov)(\?|#|$)/i.test(raw) ? raw : '';
@@ -96,14 +146,151 @@
     if(yt) return {type:'youtube', url:yt, provider:'youtube'};
     const rt = rutubeEmbedUrl(raw);
     if(rt) return {type:'youtube', url:rt, provider:'rutube'};
+    const vk = vkEmbedUrl(raw);
+    if(vk) return {type:'youtube', url:vk, provider:'vk'};
     if(typed === 'file') return {type:'file', url:raw};
     if(typed === 'youtube') return {type:'youtube', url:raw};
     if(typed === 'none') return {type:'external', url:raw};
     return {type:typed || 'external', url:raw};
   }
 
+  function normalizeVideoParts(value){
+    let items = [];
+    if(Array.isArray(value)) items = value;
+    else if(typeof value === 'string' && value.trim()){
+      const t = value.trim();
+      try{
+        const parsed = JSON.parse(t);
+        if(Array.isArray(parsed)) items = parsed;
+      }catch(e){
+        items = t.split(/\n+/).map(line=>line.trim()).filter(Boolean).map(line=>{
+          const parts = line.split('|').map(x=>x.trim()).filter(Boolean);
+          if(parts.length >= 2) return {title:parts[0], url:parts.slice(1).join('|')};
+          return {title:'', url:line};
+        });
+      }
+    }
+    const normalizedItems = items.map((item, i)=>{
+      const raw = typeof item === 'string' ? item : (item?.url || item?.video_url || '');
+      const title = typeof item === 'object' ? (item.title || item.name || '') : '';
+      const normalized = normalizeLessonVideo(raw, item?.type || 'auto');
+      if(!normalized.url || normalized.type === 'none') return null;
+      return {title: title || `Часть ${i+1}`, type: normalized.type, url: normalized.url, order: Number(item?.order || item?.sort_order || naturalVideoNumber((title || '') + ' ' + raw, i + 1))};
+    }).filter(Boolean);
+    return sortVideoParts(normalizedItems).map((p,i)=>({...p, title:p.title || `Часть ${i+1}`}));
+  }
+  function videoPartsToText(value){
+    return normalizeVideoParts(value).map((p,i)=>`${p.title || ('Часть '+(i+1))} | ${p.url}`).join('\n');
+  }
+  function videoPlayerHtml(part, i=0, total=1){
+    const title = part.title || `Часть ${i+1}`;
+    const badge = total > 1 ? `<span class="viz-badge video-part-badge">${i+1}/${total}</span>` : '';
+    const head = `<div class="video-part-title"><b>${esc(title)}</b>${badge}</div>`;
+    const direct = !(part.type === 'youtube') && !(part.type === 'external' && !directVideoUrl(part.url));
+    if(part.type === 'youtube'){
+      return `<article class="video-part-card" data-video-part="${i}">${head}<div class="video-box"><iframe title="${esc(title)}" src="${esc(part.url)}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div><p class="hint">Встроенное видео открывается внутри сайта.</p></article>`;
+    }
+    if(part.type === 'external' && !directVideoUrl(part.url)){
+      return `<article class="video-part-card" data-video-part="${i}">${head}<div class="video-box"><div class="empty">Внешняя ссылка на видео</div></div><p><a class="secondary" href="${esc(part.url)}" target="_blank" rel="noopener">Открыть видео</a></p></article>`;
+    }
+    return `<article class="video-part-card ${direct?'direct-video-part':''}" data-video-part="${i}">${head}<div class="video-box"><video data-video-part-player data-video-index="${i}" src="${esc(part.url)}" controls controlslist="nodownload" playsinline preload="metadata"></video></div></article>`;
+  }
 
-  const CACHE_VERSION = 'v10_youtube_embed';
+  function videoStateKey(lessonId){ return `sg_video_parts_state_${String(lessonId || 'demo')}`; }
+  function getSavedVideoState(lessonId){ try{return JSON.parse(localStorage.getItem(videoStateKey(lessonId)) || '{}');}catch(e){return {};} }
+  function setSavedVideoState(lessonId, data){ try{ localStorage.setItem(videoStateKey(lessonId), JSON.stringify(data || {})); }catch(e){} }
+  async function markLessonVideoWatched(lesson){
+    if(!lesson || pFor(lesson.id)?.video_watched) return;
+    await saveProgress(lesson.id,{video_watched:true});
+    trackEvent('video_parts_complete',{lesson_id:lesson.id,title:lesson.title});
+    const btn = $('#watchedBtn');
+    if(btn){ btn.className = 'success'; btn.textContent = '✅ Видео отмечено'; }
+    $$('.smart-row').forEach(row=>{ if(row.textContent.includes('Видео')) row.classList.add('done'); });
+  }
+  function setupVideoPartsPlayback(lesson){
+    const root = $('[data-video-playlist]');
+    if(!root || !lesson) return;
+    const videos = $$('[data-video-part-player]', root);
+    if(!videos.length) return;
+    const bar = $('[data-video-total-bar]', root);
+    const text = $('[data-video-total-text]', root);
+    const stateKey = videoStateKey(lesson.id);
+    const saved = getSavedVideoState(lesson.id);
+    const partState = saved.parts || {};
+    let alreadyMarked = !!pFor(lesson.id)?.video_watched;
+
+    function saveLocal(){
+      const data = { updated_at:new Date().toISOString(), parts:partState };
+      videos.forEach((v, idx)=>{
+        const duration = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : (partState[idx]?.duration || 0);
+        const current = Number.isFinite(v.currentTime) ? v.currentTime : (partState[idx]?.current || 0);
+        const ended = !!v.ended || (duration && current >= duration * .96) || !!partState[idx]?.ended;
+        partState[idx] = { duration, current, ended };
+      });
+      setSavedVideoState(lesson.id, data);
+    }
+    function updateProgress(){
+      let sum = 0;
+      videos.forEach((v, idx)=>{
+        const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : (partState[idx]?.duration || 0);
+        const c = Number.isFinite(v.currentTime) ? v.currentTime : (partState[idx]?.current || 0);
+        const ended = !!v.ended || !!partState[idx]?.ended;
+        const pct = ended ? 1 : (d ? Math.min(1, c / d) : 0);
+        sum += pct;
+        const card = v.closest('[data-video-part]');
+        if(card) card.classList.toggle('done', pct >= .96);
+      });
+      const percent = Math.round((sum / videos.length) * 100);
+      if(bar) bar.style.width = percent + '%';
+      if(text) text.textContent = percent + '% просмотрено';
+      if(percent >= 96 && !alreadyMarked){ alreadyMarked = true; markLessonVideoWatched(lesson); }
+    }
+    videos.forEach((video, idx)=>{
+      const savedPart = partState[idx];
+      video.addEventListener('loadedmetadata', ()=>{
+        if(savedPart?.current && savedPart.current > 3 && savedPart.current < video.duration - 5){
+          try{ video.currentTime = savedPart.current; }catch(e){}
+        }
+        updateProgress();
+      });
+      video.addEventListener('play', ()=>{
+        $$('[data-video-part]', root).forEach(x=>x.classList.remove('active'));
+        video.closest('[data-video-part]')?.classList.add('active');
+        videos.forEach((other, j)=>{ if(j !== idx && !other.paused) other.pause(); });
+      });
+      video.addEventListener('timeupdate', ()=>{
+        partState[idx] = {duration: video.duration || 0, current: video.currentTime || 0, ended: video.ended};
+        updateProgress();
+        if(Math.floor(video.currentTime || 0) % 5 === 0) setSavedVideoState(lesson.id, {updated_at:new Date().toISOString(), parts:partState});
+      });
+      video.addEventListener('ended', async()=>{
+        partState[idx] = {duration: video.duration || 0, current: video.duration || video.currentTime || 0, ended:true};
+        saveLocal(); updateProgress();
+        const next = videos[idx+1];
+        if(next){
+          next.closest('[data-video-part]')?.scrollIntoView({behavior:'smooth', block:'center'});
+          try{ await next.play(); }catch(e){
+            const note = $('[data-video-total-note]', root);
+            if(note) note.textContent = 'Следующая часть готова. Нажмите ▶, если браузер не запустил ее автоматически.';
+          }
+        } else {
+          await markLessonVideoWatched(lesson);
+          const note = $('[data-video-total-note]', root);
+          if(note) note.textContent = 'Все части просмотрены. Видео автоматически отмечено как просмотренное.';
+        }
+      });
+    });
+    root.addEventListener('click', (e)=>{
+      const card = e.target.closest('[data-video-part]');
+      if(!card || e.target.closest('video,iframe,a,button')) return;
+      const v = $('[data-video-part-player]', card);
+      if(v) v.play().catch(()=>{});
+    });
+    updateProgress();
+  }
+
+
+  const CACHE_VERSION = 'v14_multiple_video_lessons';
   function cacheKey(name, extra='global'){
     const project = (CFG.url || 'demo').replace(/[^a-zA-Z0-9]/g,'_').slice(-42);
     return `sg_${CACHE_VERSION}_${project}_${name}_${extra || 'global'}`;
@@ -819,6 +1006,12 @@
     }catch(e){ console.warn(e); const root=$('#lessonRoot'); if(root) root.innerHTML = networkErrorHtml('Урок не загрузился'); }
   }
   function renderVideo(lesson){
+    const parts = normalizeVideoParts(lesson.video_parts);
+    if(parts.length){
+      const directCount = parts.filter(p => !(p.type === 'youtube') && !(p.type === 'external' && !directVideoUrl(p.url))).length;
+      const note = directCount > 1 ? 'После окончания одной части следующая запускается автоматически. Для ученика это выглядит как один урок.' : (parts.length > 1 ? 'Все части собраны на одной странице урока.' : 'Видео открывается прямо внутри урока.');
+      return `<div class="lesson-video-parts" data-video-playlist data-lesson-id="${esc(lesson.id || '')}"><div class="section-head video-parts-head"><div><h2>Видео урока</h2><p>${parts.length > 1 ? 'В этом уроке добавлено несколько видео. Все они открываются прямо внутри этой страницы.' : 'Видео открывается прямо внутри урока.'}</p></div><span class="status open">${parts.length} ${parts.length===1?'часть':'частей'}</span></div><div class="video-total-progress"><div><b>Общий просмотр</b><span data-video-total-text>0% просмотрено</span></div><div class="progressbar"><span data-video-total-bar style="width:0%"></span></div><p class="hint" data-video-total-note>${note}</p></div>${parts.map((p,i)=>videoPlayerHtml(p,i,parts.length)).join('')}</div>`;
+    }
     const normalized = normalizeLessonVideo(lesson.video_url, lesson.video_type);
     if(!normalized.url || normalized.type==='none') return `<div class="video-box"><div class="empty">Видео пока не добавлено. Можно изучить текст и отметить урок просмотренным.</div></div>`;
     if(normalized.type==='youtube') return `<div class="video-box"><iframe title="Видео урока" src="${esc(normalized.url)}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div><p class="video-note">Видео открывается прямо внутри сайта.</p>`;
@@ -843,6 +1036,7 @@
     $('#watchedBtn').onclick=async()=>{ await saveProgress(lesson.id,{video_watched:true}); trackEvent('video_watched',{lesson_id:lesson.id,title:lesson.title}); location.reload(); };
     $('#practiceBtn').onclick=async()=>{ await saveProgress(lesson.id,{practice_done:true}); trackEvent('practice_done',{lesson_id:lesson.id,title:lesson.title}); location.reload(); };
     renderQuiz(lesson, questions);
+    setupVideoPartsPlayback(lesson);
   }
   function renderQuiz(lesson, questions){
     const root=$('#quizBox'); if(!root) return;
@@ -969,6 +1163,19 @@
     $('#refreshOverview').onclick=async()=>{await loadProgressAll();renderAdminOverview();renderAdminStudents();renderAdminProblems();};
     $('#openTestModeBtn').onclick=()=>{ enableTestMode(); location.href='course.html?test=1'; }; 
   }
+  function lessonVideoStatusHtml(lesson){
+    const parts = normalizeVideoParts(lesson.video_parts);
+    const main = normalizeLessonVideo(lesson.video_url, lesson.video_type);
+    if(parts.length){
+      return `<div class="lesson-video-admin-status"><span class="status open">🎬 ${parts.length} ${parts.length===1?'видео':'видео'}</span><span class="hint">Все видео будут показаны внутри одного урока. Для MP4 следующая часть может включаться автоматически.</span></div>`;
+    }
+    if(main.url){
+      const label = main.provider === 'youtube' ? 'YouTube' : main.provider === 'rutube' ? 'Rutube' : main.provider === 'vk' ? 'VK Видео' : main.type === 'file' ? 'Файл' : 'Ссылка';
+      return `<div class="lesson-video-admin-status"><span class="status done">🎬 ${esc(label)}</span><span class="hint">Основное видео добавлено.</span></div>`;
+    }
+    return `<div class="lesson-video-admin-status"><span class="status lock">Видео не добавлено</span><span class="hint">Можно вставить одну или несколько ссылок VK/YouTube/Rutube, iframe-код VK или загрузить MP4.</span></div>`;
+  }
+
   async function renderAdminLessons(){
     const root=$('#tab-lessons'); if(!root) return;
     const total = state.lessons.length;
@@ -990,6 +1197,7 @@
               <span class="status ${l.is_published ? 'done':'lock'}">${lessonStatusLabel(l)}</span>
             </div>
             <p>${esc(l.description || 'Описание пока не добавлено.')}</p>
+            ${lessonVideoStatusHtml(l)}
             <div class="lesson-under-actions">
               <button class="secondary" data-edit-lesson="${l.id}">Редактировать</button>
               <button class="danger" data-delete-lesson="${l.id}">Удалить</button>
@@ -1043,10 +1251,15 @@
       <div class="form-row"><label>Длительность<input name="duration" value="${esc(lesson?.duration || '10 минут')}" placeholder="10 минут"></label><label>Порядок<input name="sort_order" type="number" value="${esc(lesson?.sort_order || state.lessons.length+1)}"></label></div>
 
       <h3>2. Видео</h3>
-      <label>Ссылка на видео<input name="video_url" id="videoUrlInput" value="${esc(lesson?.video_url || '')}" placeholder="Вставьте ссылку YouTube / Rutube или прямую ссылку MP4"></label>
-      <div class="notice compact-note"><b>YouTube:</b> вставьте обычную ссылку вида youtube.com/watch или youtu.be — сайт сам покажет видео внутри урока без перехода на YouTube.</div>
-      <div class="upload-helper simplified-upload"><div><b>Загрузить свое видео</b><p class="hint">Для Supabase Free лучше MP4 до 50 МБ. Для больших видео используйте YouTube и вставьте ссылку выше.</p></div><div class="upload-row"><input type="file" id="lessonVideoFile" accept="video/mp4,video/webm,video/quicktime"><button class="secondary" type="button" id="uploadLessonVideo">Загрузить видео</button></div><div id="lessonUploadResult"></div></div>
-      <label class="small-select">Тип видео<select name="video_type" id="videoTypeSelect"><option value="none">Без видео</option><option value="file">Загруженное видео</option><option value="youtube">Встроенное видео YouTube/Rutube</option><option value="external">Прямая ссылка</option></select></label>
+      <div class="notice compact-note"><b>Удобный вариант для заказчика:</b> можно вставить одно видео или сразу несколько видео в один урок. Поддерживаются VK Видео, YouTube, Rutube, iframe-код VK и MP4-файлы до 50 МБ.</div>
+      <label>Одно основное видео <small>если в уроке нужно только одно видео</small><input name="video_url" id="videoUrlInput" value="${esc(lesson?.video_url || '')}" placeholder="Вставьте ссылку YouTube / Rutube / VK Видео или iframe-код VK"></label>
+      <div class="admin-actions compact-actions"><button class="secondary" type="button" id="addMainVideoToList">+ Добавить эту ссылку в список видео</button><button class="secondary" type="button" id="clearMainVideoUrl">Очистить основную ссылку</button></div>
+      <label>Несколько видео в одном уроке <small>каждое видео с новой строки. Можно просто ссылку или так: Название | ссылка</small><textarea name="video_parts" id="videoPartsInput" placeholder="Введение | https://vkvideo.ru/video-123456_789012345
+Практика | https://youtu.be/xxxx
+Итог | https://rutube.ru/video/xxxx/">${esc(videoPartsToText(lesson?.video_parts))}</textarea></label>
+      <div class="notice compact-note"><b>Как лучше делать:</b> если видео большое, загрузите его в группу ВК и вставьте ссылку сюда. Тогда заказчик просто добавляет ссылки, а ученики смотрят все видео внутри одного урока.</div>
+      <div class="upload-helper simplified-upload"><div><b>Загрузить MP4-файлы до 50 МБ</b><p class="hint">Можно выбрать сразу несколько MP4-файлов. Они автоматически добавятся в список видео этого урока. Большие файлы лучше хранить в VK Видео, YouTube или Rutube.</p></div><div class="upload-row"><input type="file" id="lessonVideoFile" accept="video/mp4,video/webm,video/quicktime" multiple><button class="secondary" type="button" id="uploadLessonVideo">Загрузить выбранные видео</button></div><div id="lessonUploadResult"></div></div>
+      <label class="small-select">Тип основного видео<select name="video_type" id="videoTypeSelect"><option value="none">Без основного видео</option><option value="file">Загруженное видео</option><option value="youtube">Встроенное видео YouTube/Rutube/VK</option><option value="external">Прямая ссылка</option></select></label>
 
       <h3>3. Материал урока</h3>
       <label>Текст урока<textarea name="content" placeholder="Напишите здесь основной материал урока простыми словами">${esc(lesson?.content || '')}</textarea></label>
@@ -1076,6 +1289,24 @@
         else if(detected.type === 'external' && videoTypeSelect.value === 'none') videoTypeSelect.value = 'external';
       });
     }
+    const addMainBtn = $('#addMainVideoToList', root);
+    const clearMainBtn = $('#clearMainVideoUrl', root);
+    const partsInputQuick = $('#videoPartsInput', root);
+    if(addMainBtn) addMainBtn.onclick = ()=>{
+      const raw = String(videoUrlInput?.value || '').trim();
+      if(!raw){ $('#lessonUploadResult', root).innerHTML = msg('Сначала вставьте ссылку на видео.', 'warning'); return; }
+      const normalized = normalizeLessonVideo(raw, 'auto');
+      if(!normalized.url){ $('#lessonUploadResult', root).innerHTML = msg('Не удалось распознать ссылку. Вставьте ссылку VK Видео, YouTube, Rutube или iframe-код VK.', 'error'); return; }
+      const current = String(partsInputQuick?.value || '').trim();
+      const count = normalizeVideoParts(current).length + 1;
+      const line = `Видео ${String(count).padStart(2,'0')} | ${raw}`;
+      if(partsInputQuick) partsInputQuick.value = current ? `${current}
+${line}` : line;
+      if(videoUrlInput) videoUrlInput.value = '';
+      if(videoTypeSelect) videoTypeSelect.value = 'none';
+      $('#lessonUploadResult', root).innerHTML = msg('Видео добавлено в список. Теперь нажмите «Сохранить урок».');
+    };
+    if(clearMainBtn) clearMainBtn.onclick = ()=>{ if(videoUrlInput) videoUrlInput.value=''; if(videoTypeSelect) videoTypeSelect.value='none'; };
     const uploadBtn = $('#uploadLessonVideo', root);
     if(uploadBtn) uploadBtn.onclick = async()=>uploadLessonVideo(root);
     $('#addQuestionBtn').onclick=()=>{ const idx=$$('.question-box').length; $('#quizEditor').insertAdjacentHTML('beforeend', questionEditorHtml({question:'',answers:['','',''],correct_index:0},idx)); };
@@ -1091,7 +1322,14 @@
       selectedLessonId=saved.id; await loadLessons(true); trackEvent('lesson_save',{lesson_id:saved.id,title:saved.title}); $('#lessonSaveResult').innerHTML=msg('Урок сохранен. Изменения сразу доступны на сайте.'); await renderAdminLessons(); renderAdminOverview();
     };
   }
-  function lessonFormPayload(fd){ const originalVideoUrl=String(fd.get('video_url')||'').trim(); const selectedVideoType=fd.get('video_type')||'none'; const normalizedVideo = normalizeLessonVideo(originalVideoUrl, selectedVideoType); return {sort_order:Number(fd.get('sort_order')||1),icon:fd.get('icon')||'🎓',title:fd.get('title'),description:fd.get('description'),duration:fd.get('duration'),video_type:normalizedVideo.type,video_url:normalizedVideo.url,content:fd.get('content'),steps:arr(fd.get('steps')),mistakes:arr(fd.get('mistakes')),practice:fd.get('practice'),passing_score:Number(fd.get('passing_score')||settings().passing_score||70),is_published:!!fd.get('is_published')}; }
+  function lessonFormPayload(fd){
+    const originalVideoUrl=String(fd.get('video_url')||'').trim();
+    const selectedVideoType=fd.get('video_type')||'none';
+    const normalizedVideo = normalizeLessonVideo(originalVideoUrl, selectedVideoType);
+    const parts = normalizeVideoParts(String(fd.get('video_parts')||''));
+    const finalType = normalizedVideo.url ? normalizedVideo.type : (parts.length ? 'file' : 'none');
+    return {sort_order:Number(fd.get('sort_order')||1),icon:fd.get('icon')||'🎓',title:fd.get('title'),description:fd.get('description'),duration:fd.get('duration'),video_type:finalType,video_url:normalizedVideo.url,video_parts:parts,content:fd.get('content'),steps:arr(fd.get('steps')),mistakes:arr(fd.get('mistakes')),practice:fd.get('practice'),passing_score:Number(fd.get('passing_score')||settings().passing_score||70),is_published:!!fd.get('is_published')};
+  }
   function questionEditorHtml(q,i){ const answers=arr(q.answers); while(answers.length<3) answers.push(''); return `<div class="question-box"><label>Вопрос ${i+1}<input name="question" value="${esc(q.question||'')}"></label><label>Ответы <small>каждый ответ с новой строки</small><textarea name="answers">${esc(answers.join('\n'))}</textarea></label><label>Номер правильного ответа <small>1, 2, 3...</small><input name="correct_index" type="number" min="1" value="${Number(q.correct_index||0)+1}"></label></div>`; }
   function collectQuiz(){ return $$('.question-box').map(box=>{ const question=$('input[name="question"]',box).value.trim(); const answers=arr($('textarea[name="answers"]',box).value); const correct_index=Math.max(0,Number($('input[name="correct_index"]',box).value||1)-1); return {question,answers,correct_index}; }).filter(q=>q.question && q.answers.length>=2); }
 
@@ -1100,33 +1338,57 @@
     const fileInput = $('#lessonVideoFile', root);
     const result = $('#lessonUploadResult', root);
     const btn = $('#uploadLessonVideo', root);
-    const file = fileInput?.files?.[0];
+    const files = Array.from(fileInput?.files || []).sort((a,b)=>{
+      const an = naturalVideoNumber(a.name, 999999);
+      const bn = naturalVideoNumber(b.name, 999999);
+      return (an-bn) || a.name.localeCompare(b.name, 'ru', {numeric:true, sensitivity:'base'});
+    });
     if(!result) return;
     if(!sb) { result.innerHTML = msg('Supabase не подключен. Загрузка видео начнет работать после настройки проекта.', 'warning'); return; }
-    if(!file) { result.innerHTML = msg('Сначала выберите видеофайл.', 'warning'); return; }
+    if(!files.length) { result.innerHTML = msg('Сначала выберите один или несколько видеофайлов.', 'warning'); return; }
     const allowed = ['video/mp4','video/webm','video/quicktime'];
-    if(file.type && !allowed.includes(file.type)) { result.innerHTML = msg('Лучше загрузить видео в формате MP4, WEBM или MOV.', 'error'); return; }
     const max = 50 * 1024 * 1024;
-    if(file.size > max) { result.innerHTML = msg('Файл больше 50 МБ. Для бесплатного Supabase загрузите видео на YouTube с доступом по ссылке и вставьте ссылку в поле выше.', 'error'); return; }
+    const tooBig = files.filter(file=>file.size > max);
+    if(tooBig.length){
+      result.innerHTML = msg(`Файл больше 50 МБ: ${esc(tooBig.map(f=>f.name+' — '+prettyBytes(f.size)).join(', '))}. Запусти VIDEO_CONVERTER.bat из архива, он сожмет и разделит видео на части до 50 МБ.`, 'error');
+      return;
+    }
+    const badType = files.find(file=>file.type && !allowed.includes(file.type));
+    if(badType) { result.innerHTML = msg('Лучше загрузить видео в формате MP4, WEBM или MOV.', 'error'); return; }
     const old = btn?.textContent || '';
-    if(btn){ btn.disabled = true; btn.textContent = 'Загружаем...'; }
-    result.innerHTML = msg('Идет загрузка видео. Не закрывайте страницу.', 'warning');
+    if(btn){ btn.disabled = true; btn.textContent = files.length > 1 ? 'Загружаем части...' : 'Загружаем...'; }
+    result.innerHTML = msg(`Идет загрузка: ${files.length} файл(ов). Не закрывайте страницу.`, 'warning');
     try{
-      const safeName = file.name.replace(/[^a-zA-Z0-9_.-]/g,'_');
-      const path = `videos/${Date.now()}-${safeName}`;
-      const { error } = await sb.storage.from('lesson-files').upload(path, file, { upsert:false, contentType:file.type || 'video/mp4', cacheControl:'3600' });
-      if(error){
-        result.innerHTML = msg(`Видео не загрузилось: ${esc(error.message)}. Проверьте, что выполнен свежий setup.sql, создан bucket lesson-files и ваш email имеет роль admin.`, 'error');
-        return;
+      const uploaded = [];
+      for(let i=0;i<files.length;i++){
+        const file = files[i];
+        if(btn) btn.textContent = `Загружаем ${i+1}/${files.length}`;
+        const safeName = file.name.replace(/[^a-zA-Z0-9_.-]/g,'_');
+        const path = `videos/${Date.now()}-${i+1}-${safeName}`;
+        const { error } = await sb.storage.from('lesson-files').upload(path, file, { upsert:false, contentType:file.type || 'video/mp4', cacheControl:'3600' });
+        if(error){
+          result.innerHTML = msg(`Видео не загрузилось: ${esc(error.message)}. Проверьте, что выполнен свежий setup.sql, создан bucket lesson-files и ваш email имеет роль admin.`, 'error');
+          return;
+        }
+        const {data} = sb.storage.from('lesson-files').getPublicUrl(path);
+        uploaded.push({title: files.length > 1 ? cleanVideoTitle(file.name, i) : (file.name.replace(/\.[^.]+$/,'') || 'Видео'), type:'file', url:data.publicUrl, order:naturalVideoNumber(file.name, i+1)});
+        trackEvent('lesson_video_upload',{name:file.name,size:file.size,path,part:i+1,total:files.length});
       }
-      const {data} = sb.storage.from('lesson-files').getPublicUrl(path);
       const urlInput = $('#videoUrlInput', root);
       const typeSelect = $('#videoTypeSelect', root) || $('select[name="video_type"]', root);
-      if(urlInput) urlInput.value = data.publicUrl;
+      const partsInput = $('#videoPartsInput', root);
       if(typeSelect) typeSelect.value = 'file';
-      trackEvent('lesson_video_upload',{name:file.name,size:file.size,path});
-      result.innerHTML = msg('Видео загружено. Ссылка вставлена в урок. Теперь нажмите «Сохранить урок».') + `<input value="${esc(data.publicUrl)}" onclick="this.select()">`;
+      if(uploaded.length === 1 && urlInput && !String(partsInput?.value || '').trim()){
+        urlInput.value = uploaded[0].url;
+        result.innerHTML = msg('Видео загружено. Ссылка вставлена в урок. Теперь нажмите «Сохранить урок».') + `<input value="${esc(uploaded[0].url)}" onclick="this.select()">`;
+      } else {
+        const existing = normalizeVideoParts(partsInput?.value || '');
+        const all = sortVideoParts(existing.concat(uploaded));
+        if(partsInput) partsInput.value = all.map((p,i)=>`${p.title || ('Часть '+String(i+1).padStart(2,'0'))} | ${p.url}`).join('\n');
+        result.innerHTML = msg(`Загружено видео: ${uploaded.length}. Они добавлены в поле «Несколько видео». Теперь нажмите «Сохранить урок».`);
+      }
     } catch(err){
+      console.warn(err);
       result.innerHTML = msg('Не удалось загрузить видео. Проверьте интернет и настройки Supabase Storage.', 'error');
     } finally {
       if(btn){ btn.disabled = false; btn.textContent = old; }

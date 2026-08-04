@@ -103,6 +103,7 @@ create table if not exists public.lessons (
   duration text default '10 минут',
   video_type text not null default 'none' check (video_type in ('none','youtube','file','external')),
   video_url text default '',
+  video_parts jsonb not null default '[]'::jsonb,
   content text default '',
   steps jsonb not null default '[]'::jsonb,
   mistakes jsonb not null default '[]'::jsonb,
@@ -140,6 +141,7 @@ create table if not exists public.lesson_progress (
 
 -- Обновление старых проектов: добавляем отдельный статус практического задания.
 alter table public.lesson_progress add column if not exists practice_done boolean not null default false;
+alter table public.lessons add column if not exists video_parts jsonb not null default '[]'::jsonb;
 
 -- Библиотека материалов: PDF, картинки, дополнительные видео и памятки.
 create table if not exists public.materials (
