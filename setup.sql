@@ -50,6 +50,8 @@ on conflict (id) do nothing;
 
 -- Обновление старых проектов: добавляем новые поля, если вы уже запускали прежний setup.sql.
 alter table public.site_settings add column if not exists site_logo text default '✦';
+alter table public.site_settings add column if not exists site_logo_url text default '';
+alter table public.site_settings add column if not exists site_logo_bg text default '';
 alter table public.site_settings add column if not exists hero_badge text default '🚀 Полноценная учебная платформа';
 alter table public.site_settings add column if not exists hero_title text default 'Научитесь пользоваться';
 alter table public.site_settings add column if not exists hero_highlight text default 'госуслугами';
@@ -142,6 +144,8 @@ create table if not exists public.lesson_progress (
 -- Обновление старых проектов: добавляем отдельный статус практического задания.
 alter table public.lesson_progress add column if not exists practice_done boolean not null default false;
 alter table public.lessons add column if not exists video_parts jsonb not null default '[]'::jsonb;
+-- В старых версиях завершение урока не включало отдельный флаг практики.
+update public.lesson_progress set practice_done = true where completed = true and practice_done = false;
 
 -- Библиотека материалов: PDF, картинки, дополнительные видео и памятки.
 create table if not exists public.materials (
@@ -232,7 +236,9 @@ as $$
 begin
   -- Защищаем роль и статус только от обычного сайта/пользователей.
   -- SQL Editor, Table Editor и серверные операции Supabase должны иметь возможность назначать admin.
-  if current_user in ('anon', 'authenticated') and not public.is_admin() then
+  -- В SECURITY DEFINER current_user равен владельцу функции, поэтому проверяем
+  -- именно JWT-пользователя. SQL Editor (auth.uid() is null) сохраняет доступ.
+  if auth.uid() is not null and not public.is_admin() then
     new.role := old.role;
     new.approval_status := old.approval_status;
     new.approved_at := old.approved_at;
@@ -291,6 +297,10 @@ begin
   where p.id = target_user_id;
 end;
 $$;
+
+-- Эту служебную функцию можно запускать только из SQL Editor владельцем БД.
+-- Без REVOKE любой клиент с anon key мог бы повысить пользователя до admin.
+revoke all on function public.make_user_admin(text) from public, anon, authenticated;
 
 
 drop trigger if exists touch_profiles on public.profiles;
@@ -392,13 +402,220 @@ create policy "materials_admin_delete" on public.materials for delete using (pub
 
 -- Аналитика: сайт может добавлять события, админ может читать.
 drop policy if exists "events_insert" on public.site_events;
-create policy "events_insert" on public.site_events for insert with check (true);
+create policy "events_insert" on public.site_events for insert
+with check (auth.uid() is not null and user_id = auth.uid());
 
 drop policy if exists "events_admin_select" on public.site_events;
 create policy "events_admin_select" on public.site_events for select using (public.is_admin());
 
 drop policy if exists "events_admin_delete" on public.site_events;
 create policy "events_admin_delete" on public.site_events for delete using (public.is_admin());
+
+-- Ученикам отдаем вопросы без правильных ответов. Администратор получает полные
+-- данные через ту же RPC-функцию, чтобы редактор теста продолжал работать.
+create or replace function public.get_lesson_quiz(p_lesson_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  result jsonb;
+begin
+  if auth.uid() is null then
+    raise exception 'not_authenticated';
+  end if;
+
+  if not public.is_admin() and (
+    not public.has_course_access()
+    or not exists (select 1 from public.lessons where id = p_lesson_id and is_published = true)
+  ) then
+    raise exception 'lesson_access_denied';
+  end if;
+  if not public.is_admin() and exists (
+    select 1
+    from public.lessons target
+    join public.lessons previous on previous.is_published = true and previous.sort_order < target.sort_order
+    where target.id = p_lesson_id
+      and not exists (
+        select 1 from public.lesson_progress lp
+        where lp.user_id = auth.uid() and lp.lesson_id = previous.id and lp.completed = true
+      )
+  ) then
+    raise exception 'lesson_locked';
+  end if;
+
+  if public.is_admin() then
+    select coalesce(jsonb_agg(to_jsonb(q) order by q.sort_order, q.id), '[]'::jsonb)
+    into result
+    from public.quiz_questions q
+    where q.lesson_id = p_lesson_id;
+  else
+    select coalesce(jsonb_agg(jsonb_build_object(
+      'id', q.id,
+      'lesson_id', q.lesson_id,
+      'sort_order', q.sort_order,
+      'question', q.question,
+      'answers', q.answers,
+      'created_at', q.created_at
+    ) order by q.sort_order, q.id), '[]'::jsonb)
+    into result
+    from public.quiz_questions q
+    where q.lesson_id = p_lesson_id;
+  end if;
+
+  return result;
+end;
+$$;
+
+create or replace function public.get_admin_quiz_questions()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  result jsonb;
+begin
+  if auth.uid() is null or not public.is_admin() then
+    raise exception 'admin_required';
+  end if;
+
+  select coalesce(jsonb_agg(to_jsonb(q) order by q.lesson_id, q.sort_order, q.id), '[]'::jsonb)
+  into result
+  from public.quiz_questions q;
+  return result;
+end;
+$$;
+
+-- Сервер сам считает балл и итоговый статус. Клиент больше не может записать
+-- себе 100% или открыть уроки прямым запросом к REST API.
+create or replace function public.save_lesson_progress(
+  p_lesson_id uuid,
+  p_video_watched boolean default null,
+  p_practice_done boolean default null,
+  p_answers jsonb default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+  target_lesson public.lessons%rowtype;
+  saved public.lesson_progress%rowtype;
+  question_count int := 0;
+  correct_count int := 0;
+  calculated_score int := null;
+  required_score int := 70;
+  finished boolean := false;
+begin
+  if uid is null then
+    raise exception 'not_authenticated';
+  end if;
+
+  select * into target_lesson from public.lessons where id = p_lesson_id;
+  if not found then
+    raise exception 'lesson_not_found';
+  end if;
+
+  if not public.is_admin() then
+    if not public.has_course_access() or not target_lesson.is_published then
+      raise exception 'lesson_access_denied';
+    end if;
+    if exists (
+      select 1
+      from public.lessons previous
+      where previous.is_published = true
+        and previous.sort_order < target_lesson.sort_order
+        and not exists (
+          select 1 from public.lesson_progress lp
+          where lp.user_id = uid and lp.lesson_id = previous.id and lp.completed = true
+        )
+    ) then
+      raise exception 'lesson_locked';
+    end if;
+  end if;
+
+  if p_answers is not null then
+    if jsonb_typeof(p_answers) <> 'array' then
+      raise exception 'answers_must_be_array';
+    end if;
+
+    select count(*)::int,
+      coalesce(sum(
+        case
+          when (p_answers ->> ((ranked.rn - 1)::int)) ~ '^\d+$'
+            then case when (p_answers ->> ((ranked.rn - 1)::int))::int = ranked.correct_index then 1 else 0 end
+          else 0
+        end
+      ), 0)::int
+    into question_count, correct_count
+    from (
+      select q.correct_index, row_number() over(order by q.sort_order, q.id) as rn
+      from public.quiz_questions q
+      where q.lesson_id = p_lesson_id
+    ) ranked;
+
+    if jsonb_array_length(p_answers) <> question_count then
+      raise exception 'answer_count_mismatch';
+    end if;
+    calculated_score := case when question_count = 0 then 100 else round(correct_count * 100.0 / question_count)::int end;
+  end if;
+
+  insert into public.lesson_progress (user_id, lesson_id, video_watched, practice_done, quiz_score, completed, updated_at)
+  values (
+    uid,
+    p_lesson_id,
+    coalesce(p_video_watched, false),
+    coalesce(p_practice_done, false),
+    calculated_score,
+    false,
+    now()
+  )
+  on conflict (user_id, lesson_id) do update
+  set video_watched = public.lesson_progress.video_watched or excluded.video_watched,
+      practice_done = public.lesson_progress.practice_done or excluded.practice_done,
+      quiz_score = case
+        when excluded.quiz_score is null then public.lesson_progress.quiz_score
+        else greatest(coalesce(public.lesson_progress.quiz_score, 0), excluded.quiz_score)
+      end,
+      updated_at = now()
+  returning * into saved;
+
+  select coalesce(target_lesson.passing_score, s.passing_score, 70)
+  into required_score
+  from public.site_settings s
+  where s.id = 1;
+  required_score := coalesce(required_score, target_lesson.passing_score, 70);
+  finished := saved.video_watched and saved.practice_done and coalesce(saved.quiz_score, 0) >= required_score;
+
+  update public.lesson_progress
+  set completed = completed or finished,
+      completed_at = case when completed or finished then coalesce(completed_at, now()) else null end,
+      updated_at = now()
+  where id = saved.id
+  returning * into saved;
+
+  return to_jsonb(saved);
+end;
+$$;
+
+revoke all on function public.get_lesson_quiz(uuid) from public, anon;
+revoke all on function public.get_admin_quiz_questions() from public, anon;
+revoke all on function public.save_lesson_progress(uuid, boolean, boolean, jsonb) from public, anon;
+grant execute on function public.get_lesson_quiz(uuid) to authenticated;
+grant execute on function public.get_admin_quiz_questions() to authenticated;
+grant execute on function public.save_lesson_progress(uuid, boolean, boolean, jsonb) to authenticated;
+
+-- Табличные изменения прогресса запрещены: запись идет только через проверенную RPC.
+revoke insert, update, delete on public.lesson_progress from anon, authenticated;
+-- correct_index не должен утекать ученику через прямой REST-запрос.
+revoke select on public.quiz_questions from anon, authenticated;
+grant select (id, lesson_id, sort_order, question, answers, created_at) on public.quiz_questions to authenticated;
 
 -- Примеры уроков, чтобы сайт сразу выглядел заполненным.
 -- Блок написан так, чтобы повторный запуск setup.sql не создавал дубликаты.
@@ -492,7 +709,8 @@ create index if not exists idx_site_errors_page_action_created on public.site_er
 alter table public.site_errors enable row level security;
 
 drop policy if exists "errors_insert" on public.site_errors;
-create policy "errors_insert" on public.site_errors for insert with check (true);
+create policy "errors_insert" on public.site_errors for insert
+with check (auth.uid() is not null and user_id = auth.uid());
 
 drop policy if exists "errors_admin_select" on public.site_errors;
 create policy "errors_admin_select" on public.site_errors for select using (public.is_admin());

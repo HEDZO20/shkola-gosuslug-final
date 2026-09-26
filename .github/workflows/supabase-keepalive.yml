@@ -1,0 +1,50 @@
+name: Supabase keep-alive
+
+on:
+  schedule:
+    # Несколько реальных API-запросов в день обычно не дают Free-проекту уснуть.
+    - cron: "17 */8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-keepalive
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Read the public Supabase config
+        uses: actions/checkout@v4
+
+      - name: Export URL and publishable key
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const config = fs.readFileSync('supabase-config.js', 'utf8');
+          const url = config.match(/\burl\s*:\s*["']([^"']+)["']/)?.[1];
+          const key = config.match(/\banonKey\s*:\s*["']([^"']+)["']/)?.[1];
+          if (!url || !key) {
+            console.error('Supabase URL or publishable key is missing in supabase-config.js.');
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_ENV, `SUPABASE_URL=${url}\nSUPABASE_ANON_KEY=${key}\n`);
+          NODE
+
+      - name: Send a small database request
+        run: |
+          status=$(curl --silent --show-error --max-time 25 \
+            --output /dev/null --write-out "%{http_code}" \
+            "$SUPABASE_URL/rest/v1/site_settings?select=id&limit=1" \
+            --header "apikey: $SUPABASE_ANON_KEY" \
+            --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            --header "User-Agent: shkola-gosuslug-keepalive/1.0")
+          case "$status" in
+            2*) echo "Supabase is active (HTTP $status)." ;;
+            *) echo "::error::Supabase returned HTTP $status."; exit 1 ;;
+          esac

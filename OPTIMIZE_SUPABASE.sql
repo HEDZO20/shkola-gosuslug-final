@@ -32,7 +32,8 @@ create index if not exists idx_site_errors_page_action_created on public.site_er
 alter table public.site_errors enable row level security;
 
 drop policy if exists "errors_insert" on public.site_errors;
-create policy "errors_insert" on public.site_errors for insert with check (true);
+create policy "errors_insert" on public.site_errors for insert
+with check (auth.uid() is not null and user_id = auth.uid());
 
 drop policy if exists "errors_admin_select" on public.site_errors;
 create policy "errors_admin_select" on public.site_errors for select using (public.is_admin());

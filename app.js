@@ -24,6 +24,26 @@
   function arr(v){ if(Array.isArray(v)) return v.filter(Boolean); if(typeof v==='string') return v.split('\n').map(x=>x.trim()).filter(Boolean); return []; }
   function joinLines(v){ return arr(v).join('\n'); }
   function getQuery(name){ return new URLSearchParams(location.search).get(name); }
+  function safeNextPath(value=''){
+    const raw = String(value || '').trim();
+    if(!raw) return '';
+    try{
+      const url = new URL(raw, location.href);
+      if(url.origin !== location.origin) return '';
+      const file = url.pathname.split('/').pop() || 'index.html';
+      const allowed = new Set(['index.html','program.html','course.html','lesson.html','materials.html','cabinet.html','complete.html','admin.html']);
+      return allowed.has(file) ? `${file}${url.search}` : '';
+    }catch(e){ return ''; }
+  }
+  function safeExternalUrl(value='', fallback='#'){
+    const raw = String(value || '').trim();
+    if(!raw) return fallback;
+    if(raw === '#') return '#';
+    try{
+      const url = new URL(raw, location.href);
+      return ['http:','https:'].includes(url.protocol) ? url.toString() : fallback;
+    }catch(e){ return fallback; }
+  }
   function cleanPhone(p=''){ return String(p).replace(/\D/g,''); }
   function todayRu(){ return new Date().toLocaleDateString('ru-RU'); }
   function shortId(id=''){ return String(id).replace(/-/g,'').slice(0,10).toUpperCase(); }
@@ -148,10 +168,13 @@
     if(rt) return {type:'youtube', url:rt, provider:'rutube'};
     const vk = vkEmbedUrl(raw);
     if(vk) return {type:'youtube', url:vk, provider:'vk'};
-    if(typed === 'file') return {type:'file', url:raw};
-    if(typed === 'youtube') return {type:'youtube', url:raw};
-    if(typed === 'none') return {type:'external', url:raw};
-    return {type:typed || 'external', url:raw};
+    const safeUrl = safeExternalUrl(raw, '');
+    if(!safeUrl) return {type:'none', url:''};
+    if(typed === 'file') return {type:'file', url:safeUrl};
+    // Не помещаем неизвестный адрес в iframe: это защищает страницу от подмены содержимого.
+    if(typed === 'youtube') return {type:'external', url:safeUrl};
+    if(typed === 'none') return {type:'external', url:safeUrl};
+    return {type:typed || 'external', url:safeUrl};
   }
 
   function normalizeVideoParts(value){
@@ -334,6 +357,8 @@
       site_title:'Школа Госуслуг',
       site_subtitle:'Научитесь пользоваться государственными услугами быстро и уверенно',
       site_logo:'✦',
+      site_logo_url:'',
+      site_logo_bg:'',
       hero_badge:'🎓 Пошаговое обучение для новичков',
       hero_title:'Научитесь пользоваться',
       hero_highlight:'госуслугами',
@@ -392,9 +417,19 @@
 
   function settings(){ return {...defaultSettings(), ...(state.settings || {})}; }
   function whatsappUrl(text='Здравствуйте! У меня вопрос по обучению.'){ const phone = cleanPhone(settings().whatsapp_phone); return `https://wa.me/${phone}?text=${encodeURIComponent(text)}`; }
-  function setWhatsAppLinks(){ $$('.whatsapp-link,.float-whatsapp').forEach(a=>{ a.href=whatsappUrl(); }); }
+  function setWhatsAppLinks(){
+    $$('.whatsapp-link,.float-whatsapp').forEach(a=>{
+      let text='Здравствуйте! У меня вопрос по обучению.';
+      try{
+        const current=new URL(a.getAttribute('href') || '#', location.href);
+        if(current.hostname==='wa.me' && current.searchParams.get('text')) text=current.searchParams.get('text');
+      }catch(e){}
+      a.href=whatsappUrl(text);
+      if(a.target==='_blank') a.rel='noopener';
+    });
+  }
   async function trackEvent(action, metadata={}){
-    if(!sb) return;
+    if(!sb || !state.user) return;
     try{
       await sb.from('site_events').insert({
         user_id: state.user?.id || null,
@@ -405,7 +440,7 @@
     } catch(e){ console.warn('analytics skipped', e); }
   }
   async function trackError(action, error, metadata={}){
-    if(!sb) return;
+    if(!sb || !state.user) return;
     try{
       const message = error?.message || String(error || 'unknown');
       await sb.from('site_errors').insert({
@@ -433,7 +468,10 @@
     const hash = new URLSearchParams((location.hash||'').replace(/^#/,''));
     return search.get('recovery') === '1' || search.get('type') === 'recovery' || hash.get('type') === 'recovery';
   }
-  function redirectLogin(){ location.href = `index.html?login=1&next=${encodeURIComponent(location.pathname.split('/').pop()+location.search)}`; }
+  function redirectLogin(){
+    const next = safeNextPath(location.pathname.split('/').pop()+location.search) || 'cabinet.html';
+    location.href = `index.html?login=1&next=${encodeURIComponent(next)}`;
+  }
 
   async function init(){
     renderConfigWarning();
@@ -441,7 +479,7 @@
       state.settings = defaultSettings();
       state.lessons = demoLessons();
       state.materials = demoMaterials();
-      state.progress = [{user_id:'demo-user', lesson_id:'demo-1', video_watched:true, quiz_score:100, completed:true, completed_at:new Date().toISOString(), updated_at:new Date().toISOString()}];
+      state.progress = [{user_id:'demo-user', lesson_id:'demo-1', video_watched:true, practice_done:true, quiz_score:100, completed:true, completed_at:new Date().toISOString(), updated_at:new Date().toISOString()}];
       state.user = {id:'demo-user', email:'demo@example.com'};
       state.profile = {id:'demo-user', email:'demo@example.com', full_name:'Демо-ученик', role:'student', approval_status:'approved'};
       hydrateBrand(); setWhatsAppLinks(); bindCommon(); initDemoPage(); return;
@@ -479,7 +517,7 @@
     if(page==='program') { renderLessonPreview(); renderMaterialsPreview(); }
     if(page==='materials') { renderMaterialsPage(); }
     if(page==='course') { hydrateCourseHeader(); renderCourse(); }
-    if(page==='lesson') { const id=getQuery('id') || state.lessons[0]?.id; const lesson=state.lessons.find(l=>l.id===id) || state.lessons[0]; renderLesson(lesson, state.lessons.indexOf(lesson), demoQuestions(lesson.id)); }
+    if(page==='lesson') { const id=getQuery('id') || state.lessons[0]?.id; const lesson=state.lessons.find(l=>l.id===id); if(!lesson){ const root=$('#lessonRoot'); if(root) root.innerHTML=msg('Урок не найден. Проверьте ссылку или вернитесь к курсу.','error')+'<p><a class="secondary" href="course.html">Вернуться к курсу</a></p>'; } else renderLesson(lesson, state.lessons.indexOf(lesson), demoQuestions(lesson.id)); }
     if(page==='cabinet') { renderCabinet(); }
     if(page==='complete') { renderComplete(); }
     if(page==='certificate') { location.replace('complete.html'); }
@@ -552,7 +590,14 @@
     const cached = cacheGet('questions', key, 45*1000);
     if(cached) return cached;
     try{
-      const { data, error } = await withTimeout(sb.from('quiz_questions').select('*').eq('lesson_id',lessonId).order('sort_order',{ascending:true}), 9000, 'вопросы урока');
+      let { data, error } = await withTimeout(sb.rpc('get_lesson_quiz',{p_lesson_id:lessonId}), 9000, 'вопросы урока');
+      // Совместимость со старой базой до повторного запуска setup.sql.
+      if(error){
+        console.warn('get_lesson_quiz fallback', error);
+        const fallback = await withTimeout(sb.from('quiz_questions').select('*').eq('lesson_id',lessonId).order('sort_order',{ascending:true}), 9000, 'вопросы урока');
+        data = fallback.data;
+        error = fallback.error;
+      }
       if(error){ console.warn(error); return []; }
       cacheSet('questions', key, data || []);
       return data || [];
@@ -693,7 +738,7 @@
   }
   function materialCardHtml(m){
     const lesson = state.lessons.find(l=>l.id===m.lesson_id);
-    const url = m.file_url || '#';
+    const url = safeExternalUrl(m.file_url, '#');
     return `<a class="material-card card" href="${esc(url)}" target="_blank" rel="noopener"><div class="icon">${materialIcon(m)}</div><h3>${esc(m.title || 'Материал')}</h3><p>${esc(m.description || '')}</p>${lesson?`<span>К уроку: ${esc(lesson.title)}</span>`:''}</a>`;
   }
   function searchItems(term=''){
@@ -708,12 +753,26 @@
     document.documentElement.style.setProperty('--blue', s.theme_primary || '#42d7ff');
     document.documentElement.style.setProperty('--violet', s.theme_secondary || '#8b5cf6');
     document.documentElement.style.setProperty('--pink', s.theme_accent || '#ff4ecd');
-    if(s.site_width) document.documentElement.style.setProperty('--max', `${Number(s.site_width)||1360}px`);
+    if(s.site_width){
+      const width = Math.min(1800, Math.max(960, Number(s.site_width) || 1360));
+      document.documentElement.style.setProperty('--max', `${width}px`);
+    }
     document.title = document.title.replace('Школа Госуслуг', s.site_title || 'Школа Госуслуг');
     const metaDesc = document.querySelector('meta[name="description"]'); if(metaDesc) metaDesc.setAttribute('content', s.hero_text || s.site_subtitle || 'Онлайн-обучение работе с государственными услугами');
     const ogTitle = document.querySelector('meta[property="og:title"]'); if(ogTitle) ogTitle.setAttribute('content', s.site_title || 'Школа Госуслуг');
     const ogDesc = document.querySelector('meta[property="og:description"]'); if(ogDesc) ogDesc.setAttribute('content', s.hero_text || s.site_subtitle || 'Онлайн-обучение работе с государственными услугами');
-    $$('.brand-icon').forEach(el=>el.textContent=s.site_logo || '✦');
+    document.documentElement.style.setProperty('--logo-bg', s.site_logo_bg || 'linear-gradient(135deg,var(--blue),var(--violet))');
+    $$('.brand-icon').forEach(el=>{
+      const logoUrl = safeExternalUrl(s.site_logo_url, '');
+      el.classList.toggle('has-image', !!logoUrl);
+      if(logoUrl){
+        el.innerHTML = `<img src="${esc(logoUrl)}" alt="${esc(s.site_title || 'Логотип')}" loading="eager">`;
+        el.style.background = s.site_logo_bg || 'rgba(255,255,255,.06)';
+      }else{
+        el.textContent=s.site_logo || '✦';
+        el.style.background = '';
+      }
+    });
     $$('.brand strong').forEach(el=>el.textContent=s.site_title || 'Школа Госуслуг');
     $$('.brand span').forEach(el=>el.textContent=s.site_subtitle || '');
     const badge = $('#heroBadge'); if(badge) badge.textContent = s.hero_badge || '';
@@ -731,8 +790,13 @@
     $$('[data-primary-label]').forEach(el=>el.textContent=s.primary_button_text||'Пройти курс');
     $$('[data-secondary-label]').forEach(el=>el.textContent=s.secondary_button_text||'Личный кабинет');
     const foot = $('.footer'); if(foot) foot.textContent = s.footer_text || '';
+    $$('.nav a').forEach(link=>{
+      const active = (link.getAttribute('href') || '').split('?')[0] === `${page === 'home' ? 'index' : page}.html`;
+      link.classList.toggle('active', active);
+      if(active) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current');
+    });
     const userBox = $('#userBox');
-    if(userBox) userBox.innerHTML = state.user ? `<button class="secondary" id="logoutBtn">Выйти</button>` : `<button class="secondary" data-open-auth>Войти</button>`;
+    if(userBox) userBox.innerHTML = !sb ? `<span class="nav-pill">Демо-режим</span>` : state.user ? `<button class="secondary" id="logoutBtn">Выйти</button>` : `<button class="secondary" data-open-auth>Войти</button>`;
     const out = $('#logoutBtn'); if(out) out.onclick = signOut;
     renderMobileSessionBar();
   }
@@ -745,14 +809,16 @@
       bar.className = 'mobile-session-bar';
       document.body.appendChild(bar);
     }
-    if(state.user){
+    if(!sb){
+      bar.innerHTML = `<a class="secondary" href="index.html">Главная</a><a class="secondary" href="program.html">Программа</a><a class="primary" href="course.html">Курс</a><a class="secondary" href="cabinet.html">Кабинет</a>`;
+    } else if(state.user){
       const destination = state.profile?.role === 'admin' ? 'admin.html' : (hasCourseAccess() ? 'course.html' : 'cabinet.html');
       const label = state.profile?.role === 'admin' ? 'Админка' : (hasCourseAccess() ? 'Курс' : 'Статус');
-      bar.innerHTML = `<a class="secondary" href="cabinet.html">Кабинет</a><a class="primary" href="${destination}">${label}</a><button class="danger" id="mobileLogoutBtn">Выйти</button>`;
+      bar.innerHTML = `<a class="secondary" href="materials.html">Материалы</a><a class="secondary" href="cabinet.html">Кабинет</a><a class="primary" href="${destination}">${label}</a><button class="danger" id="mobileLogoutBtn">Выйти</button>`;
       const mobileOut = $('#mobileLogoutBtn');
       if(mobileOut) mobileOut.onclick = signOut;
     } else {
-      bar.innerHTML = `<button class="primary" data-open-auth>Войти</button>`;
+      bar.innerHTML = `<a class="secondary" href="index.html">Главная</a><a class="secondary" href="program.html">Программа</a><button class="primary" data-open-auth>Войти</button>`;
     }
   }
 
@@ -783,7 +849,7 @@
   function showAuthModal(mode='signin'){
     let modal = $('#authModal');
     if(!modal){
-      document.body.insertAdjacentHTML('beforeend', `<div id="authModal" class="modal"><div class="auth-card glass"><div class="modal-head"><h2 id="authTitle">Вход</h2><button class="secondary" id="closeAuth">×</button></div><div id="authBody"></div></div></div>`);
+      document.body.insertAdjacentHTML('beforeend', `<div id="authModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="authTitle"><div class="auth-card glass"><div class="modal-head"><h2 id="authTitle">Вход</h2><button class="secondary" id="closeAuth" type="button" aria-label="Закрыть окно входа">×</button></div><div id="authBody"></div></div></div>`);
       modal = $('#authModal'); $('#closeAuth').onclick=()=>modal.remove();
     }
     renderAuth($('#authBody'), mode);
@@ -820,27 +886,10 @@
       return;
     }
     if(reset){
-      root.innerHTML = `${message}${!sb?msg('Сначала подключите Supabase. Сейчас открыт демо-режим.', 'warning'):''}
-        <form class="form" id="authForm">
-          <label>Email<input name="email" type="email" required placeholder="you@example.com" autocomplete="email"></label>
-          <button class="primary" type="submit" id="authSubmitBtn">Отправить ссылку</button>
-        </form>
+      root.innerHTML = `${message}
+        <div class="notice warning"><b>Восстановление через письмо отключено.</b><br>Чтобы не ловить ошибку <b>email rate limit exceeded</b>, сайт больше не отправляет письма Supabase. Если ученик забыл пароль, администратор меняет его в Supabase: Authentication → Users → пользователь → Reset password / Update password.</div>
         <p class="hint"><button class="secondary" id="toggleAuth" type="button">Вернуться ко входу</button></p>`;
       $('#toggleAuth',root).onclick=()=>renderAuth(root, 'signin');
-      $('#authForm',root).onsubmit=async(e)=>{
-        e.preventDefault();
-        if(!sb) return renderAuth(root, 'signin', msg('Подключите Supabase, чтобы восстановить пароль.', 'warning'));
-        const btn=$('#authSubmitBtn',root); const old=btn.textContent; btn.disabled=true; btn.textContent='Отправляем...';
-        const email=String(new FormData(e.currentTarget).get('email')||'').trim();
-        const redirectTo = new URL('index.html?login=1&recovery=1', location.href).href;
-        try{
-          const {error}=await sb.auth.resetPasswordForEmail(email,{redirectTo});
-          if(error) return renderAuth(root,'reset',msg('Не удалось отправить письмо: '+esc(error.message),'error'));
-          renderAuth(root,'signin',msg('Если email зарегистрирован, на него отправлена ссылка для смены пароля.','notice'));
-        } catch(err){
-          renderAuth(root,'reset',msg('Ошибка соединения. Попробуйте еще раз.','error'));
-        } finally { const b=$('#authSubmitBtn',root); if(b){b.disabled=false;b.textContent=old;} }
-      };
       return;
     }
     root.innerHTML = `${message}${!sb?msg('Сначала подключите Supabase. Сейчас открыт демо-режим.', 'warning'):''}
@@ -850,9 +899,8 @@
         <label>Пароль<input name="password" type="password" required minlength="6" placeholder="Минимум 6 символов" autocomplete="${signup?'new-password':'current-password'}"></label>
         <button class="primary" type="submit" id="authSubmitBtn">${signup?'Создать кабинет':'Войти'}</button>
       </form>
-      <p class="hint auth-switch-row">${signup?'Уже есть кабинет?':'Нет кабинета?'} <button class="secondary" id="toggleAuth" type="button">${signup?'Войти':'Зарегистрироваться'}</button>${!signup?` <button class="secondary" id="forgotPasswordBtn" type="button">Забыли пароль?</button>`:''}</p>`;
+      <p class="hint auth-switch-row">${signup?'Уже есть кабинет?':'Нет кабинета?'} <button class="secondary" id="toggleAuth" type="button">${signup?'Войти':'Зарегистрироваться'}</button>${!signup?` <span class="hint">Забыли пароль? Обратитесь к администратору.</span>`:''}</p>`;
     $('#toggleAuth',root).onclick=()=>renderAuth(root, signup?'signin':'signup');
-    const forgot=$('#forgotPasswordBtn',root); if(forgot) forgot.onclick=()=>renderAuth(root,'reset');
     $('#authForm',root).onsubmit=async(e)=>{
       e.preventDefault();
       if(!sb){ location.href = signup ? 'course.html' : 'cabinet.html'; return; }
@@ -868,19 +916,23 @@
       try{
         let res;
         if(signup){
-          res = await sb.auth.signUp({email,password,options:{data:{full_name:name}, emailRedirectTo:new URL('index.html?login=1', location.href).href}});
-          if(res.error) return renderAuth(root, 'signup', msg(res.error.message,'error'));
+          res = await sb.auth.signUp({email,password,options:{data:{full_name:name}}});
+          if(res.error){
+            const em = String(res.error.message || '');
+            if(em.toLowerCase().includes('email rate limit')) return renderAuth(root, 'signup', msg('Supabase пытается отправить письмо и уперся в лимит. Отключите в Supabase: Authentication → Providers → Email → Confirm email = OFF. После этого регистрация будет работать без писем, а доступ ученикам подтверждает админ.', 'error'));
+            return renderAuth(root, 'signup', msg(em,'error'));
+          }
           if(!res.data.session){
-            return renderAuth(root, 'signin', msg('Кабинет создан. Если включено подтверждение почты, откройте письмо от Supabase и подтвердите email, потом войдите.', 'notice'));
+            return renderAuth(root, 'signin', msg('Кабинет создан, но Supabase не выдал сессию. Обычно это значит, что включено подтверждение email. Отключите Confirm email в Supabase, чтобы ученики регистрировались без писем и ждали подтверждения админа.', 'warning'));
           }
           state.user = res.data.user; await loadProfile();
           if(name) await sb.from('profiles').update({full_name:name}).eq('id',state.user.id);
           location.href = 'cabinet.html';
         } else {
           res = await sb.auth.signInWithPassword({email,password});
-          if(res.error) return renderAuth(root, 'signin', msg('Не удалось войти. Проверьте email, пароль и подтверждение почты. Если забыли пароль — нажмите «Забыли пароль?».', 'error'));
+          if(res.error) return renderAuth(root, 'signin', msg('Не удалось войти. Проверьте email и пароль. Если пароль забыли — администратор меняет его в Supabase → Authentication → Users.', 'error'));
           state.user = res.data.user; await loadProfile();
-          const nextParam = new URLSearchParams(location.search).get('next');
+          const nextParam = safeNextPath(new URLSearchParams(location.search).get('next'));
           if(state.profile?.role === 'admin' && (!nextParam || nextParam === 'cabinet.html' || nextParam === 'course.html')) location.href = 'admin.html';
           else if(state.profile?.role !== 'admin' && !hasCourseAccess() && (!nextParam || ['course.html','lesson.html','materials.html','complete.html'].some(x=>nextParam.includes(x)))) location.href = 'cabinet.html';
           else location.href = nextParam || (state.profile?.role === 'admin' ? 'admin.html' : (hasCourseAccess() ? 'course.html' : 'cabinet.html'));
@@ -945,7 +997,7 @@
     const text = blocked
       ? 'Доступ к обучению пока закрыт. Свяжитесь с администратором, чтобы уточнить причину.'
       : 'Ваша заявка на обучение отправлена. Администратор проверит регистрацию и откроет доступ к урокам.';
-    root.innerHTML = `<section class="approval-card glass panel"><div class="approval-icon">${blocked?'⛔':'⏳'}</div><h1>${blocked?'Доступ не открыт':'Ожидает подтверждения'}</h1><p>${esc(text)}</p><div class="approval-status-row"><span class="status ${approvalClass()}">${esc(approvalText())}</span><span>${esc(state.profile?.email || state.user?.email || '')}</span></div><div class="auth-actions"><a class="secondary" href="cabinet.html">Открыть кабинет</a><a class="ghost-btn whatsapp-link" target="_blank" href="${whatsappUrl('Здравствуйте! Я зарегистрировался на курс и ожидаю подтверждения доступа.')}">Написать в WhatsApp</a></div></section>`;
+    root.innerHTML = `<section class="approval-card glass panel"><div class="approval-icon">${blocked?'⛔':'⏳'}</div><h1>${blocked?'Доступ не открыт':'Ожидает подтверждения'}</h1><p>${esc(text)}</p><div class="approval-status-row"><span class="status ${approvalClass()}">${esc(approvalText())}</span><span>${esc(state.profile?.email || state.user?.email || '')}</span></div><div class="auth-actions"><a class="secondary" href="cabinet.html">Открыть кабинет</a><a class="ghost-btn whatsapp-link" target="_blank" rel="noopener" href="${whatsappUrl('Здравствуйте! Я зарегистрировался на курс и ожидаю подтверждения доступа.')}">Написать в WhatsApp</a></div></section>`;
     setWhatsAppLinks();
   }
   async function requireApprovedStudent(targetSelector){
@@ -987,7 +1039,7 @@
       return `<a class="lesson-card ${unlocked?'':'locked'}" href="${href}" ${unlocked?'':'onclick="return false"'}><div class="lesson-num">${esc(l.icon)}</div><div><h3>${originalIndex+1}. ${esc(l.title)}</h3><p>${esc(l.description||'')}</p><span>${esc(l.duration||'')}</span><div class="mini-progress-line"><span class="${st.video?'on':''}">Видео</span><span class="${st.practice?'on':''}">Практика</span><span class="${st.test?'on':''}">Тест${p?.quiz_score!=null?' '+p.quiz_score+'%':''}</span></div></div>${status}</a>`;
     }).join('') || `<div class="empty">${term?'По запросу уроки не найдены.':'Пока нет опубликованных уроков.'}</div>`;
     const hint=$('#courseSearchHint');
-    if(hint) hint.innerHTML = term ? `Найдено уроков: <b>${filteredLessons.length}</b>, материалов: <b>${filteredMaterials.length}</b>.` + (filteredMaterials.length?`<div class="material-inline-list">${filteredMaterials.slice(0,3).map(m=>`<a href="${esc(m.file_url||'#')}" target="_blank">${materialIcon(m)} ${esc(m.title)}</a>`).join('')}</div>`:'') : 'Введите слово, чтобы найти урок или материал.';
+    if(hint) hint.innerHTML = term ? `Найдено уроков: <b>${filteredLessons.length}</b>, материалов: <b>${filteredMaterials.length}</b>.` + (filteredMaterials.length?`<div class="material-inline-list">${filteredMaterials.slice(0,3).map(m=>`<a href="${esc(safeExternalUrl(m.file_url,'#'))}" target="_blank" rel="noopener">${materialIcon(m)} ${esc(m.title)}</a>`).join('')}</div>`:'') : 'Введите слово, чтобы найти урок или материал.';
   }
 
   async function initLesson(){
@@ -1019,7 +1071,7 @@
     return `<div class="video-box"><video src="${esc(normalized.url)}" controls playsinline preload="metadata"></video></div>`;
   }
   function lessonContentHtml(lesson){
-    return `<div class="lesson-content"><h2>Конспект урока</h2><p>${String(lesson.content||'Материал урока скоро появится.').replace(/\n/g,'<br>')}</p></div>
+    return `<div class="lesson-content"><h2>Конспект урока</h2><p>${esc(lesson.content||'Материал урока скоро появится.').replace(/\n/g,'<br>')}</p></div>
       <h2>Пошаговая инструкция</h2><ol class="check-list">${arr(lesson.steps).map(s=>`<li>${esc(s)}</li>`).join('') || '<li>Посмотрите видео и выполните задание.</li>'}</ol>
       <h2>Частые ошибки</h2><ul class="check-list">${arr(lesson.mistakes).map(s=>`<li>${esc(s)}</li>`).join('') || '<li>Не торопитесь и проверяйте каждый шаг.</li>'}</ul>
       <h2>Практика</h2><div class="notice">${esc(lesson.practice || 'Закрепите материал на учебном примере.')}</div>`;
@@ -1030,7 +1082,7 @@
     const testNotice = isTestMode() ? `<div class="notice warning"><b>Тестовый режим:</b> прогресс не сохраняется ученикам. <button class="secondary" data-exit-test-mode>Выйти</button></div>` : '';
     root.innerHTML = `${testNotice}<div class="page-title"><a class="secondary" href="course.html">← К списку уроков</a><h1>${esc(lesson.icon)} ${idx+1}. ${esc(lesson.title)}</h1><p>${esc(lesson.description||'')}</p></div>
       <div class="lesson-shell"><div class="glass panel">${renderVideo(lesson)}
-      <div class="lesson-actions"><button id="watchedBtn" class="${watched?'success':'primary'}" type="button">${watched?'✅ Видео отмечено':'Я посмотрел видео'}</button><button id="practiceBtn" class="${practiceDone?'success':'secondary'}" type="button">${practiceDone?'✅ Практика выполнена':'Я выполнил практику'}</button><a class="ghost-btn whatsapp-link" href="${whatsappUrl('Здравствуйте! У меня вопрос по уроку: '+lesson.title)}" target="_blank">Задать вопрос по уроку</a></div>
+      <div class="lesson-actions"><button id="watchedBtn" class="${watched?'success':'primary'}" type="button">${watched?'✅ Видео отмечено':'Я посмотрел видео'}</button><button id="practiceBtn" class="${practiceDone?'success':'secondary'}" type="button">${practiceDone?'✅ Практика выполнена':'Я выполнил практику'}</button><a class="ghost-btn whatsapp-link" href="${whatsappUrl('Здравствуйте! У меня вопрос по уроку: '+lesson.title)}" target="_blank" rel="noopener">Задать вопрос по уроку</a></div>
       ${lessonContentHtml(lesson)}<h2>Ваш прогресс по уроку</h2>${progressChecklistHtml(lesson)}<h2>Тест после урока</h2><div id="quizBox"></div></div>
       <aside class="glass panel sidebar-sticky"><h3>Условие открытия следующего урока</h3><p>1. Отметить просмотр видео.</p><p>2. Выполнить практику.</p><p>3. Пройти тест минимум на <b>${passScore(lesson)}%</b>.</p><div class="progressbar"><span style="width:${st.percent}%"></span></div>${progressChecklistHtml(lesson)}<p>${isComplete(lesson)?'Урок завершен ✅':'Урок еще не завершен'}</p></aside></div>`;
     $('#watchedBtn').onclick=async()=>{ await saveProgress(lesson.id,{video_watched:true}); trackEvent('video_watched',{lesson_id:lesson.id,title:lesson.title}); location.reload(); };
@@ -1040,12 +1092,23 @@
   }
   function renderQuiz(lesson, questions){
     const root=$('#quizBox'); if(!root) return;
-    if(!questions.length){ root.innerHTML = msg('Вопросы теста пока не добавлены. Отметьте видео просмотренным, чтобы завершить урок.', 'warning') + `<button class="primary" id="completeNoQuiz">Завершить урок</button>`; $('#completeNoQuiz').onclick=async()=>{ await saveProgress(lesson.id,{video_watched:true,practice_done:true,quiz_score:100}); trackEvent('lesson_complete_no_quiz',{lesson_id:lesson.id,title:lesson.title}); location.href='course.html'; }; return; }
+    if(!questions.length){ root.innerHTML = msg('Вопросы теста пока не добавлены. Отметьте видео и практику, затем завершите урок.', 'warning') + `<button class="primary" id="completeNoQuiz">Завершить урок</button>`; $('#completeNoQuiz').onclick=async()=>{ const saved=await saveProgress(lesson.id, sb && !(isTestMode() && state.profile?.role==='admin') ? {video_watched:true,practice_done:true,answers:[]} : {video_watched:true,practice_done:true,quiz_score:100}); if(!saved) return; trackEvent('lesson_complete_no_quiz',{lesson_id:lesson.id,title:lesson.title}); location.href='course.html'; }; return; }
     root.innerHTML = `<form id="quizForm">${questions.map((q,qi)=>`<div class="quiz-item"><h3>${qi+1}. ${esc(q.question)}</h3><div class="quiz-answers">${arr(q.answers).map((a,ai)=>`<label><input type="radio" required name="q${qi}" value="${ai}">${esc(a)}</label>`).join('')}</div></div>`).join('')}<button class="primary" type="submit">Проверить тест</button></form><div id="quizResult"></div>`;
     $('#quizForm').onsubmit=async(e)=>{
-      e.preventDefault(); let ok=0; const fd=new FormData(e.currentTarget); questions.forEach((q,qi)=>{ if(Number(fd.get('q'+qi))===Number(q.correct_index)) ok++; });
-      const score = Math.round(ok/questions.length*100); const complete = score>=passScore(lesson) && !!(pFor(lesson.id)||{}).practice_done;
-      await saveProgress(lesson.id,{video_watched:true,quiz_score:score});
+      e.preventDefault();
+      const fd=new FormData(e.currentTarget);
+      const answers=questions.map((q,qi)=>Number(fd.get('q'+qi)));
+      let score=0; let complete=false;
+      if(sb && !(isTestMode() && state.profile?.role==='admin')){
+        const saved=await saveProgress(lesson.id,{video_watched:true,answers});
+        if(!saved){ $('#quizResult').innerHTML=msg('Не удалось проверить тест. Повторите попытку.','error'); return; }
+        score=Number(saved.quiz_score||0); complete=!!saved.completed;
+      }else{
+        let ok=0; questions.forEach((q,qi)=>{ if(answers[qi]===Number(q.correct_index)) ok++; });
+        score=Math.round(ok/questions.length*100);
+        const saved=await saveProgress(lesson.id,{video_watched:true,quiz_score:score});
+        complete=!!saved?.completed;
+      }
       trackEvent('quiz_submit',{lesson_id:lesson.id,title:lesson.title,score,complete});
       $('#quizResult').innerHTML = complete ? msg(`Отлично! Результат ${score}%. Следующий урок открыт.`) + `<p><a class="primary" href="course.html">К списку уроков</a></p>` : msg(score>=passScore(lesson) ? `Результат ${score}%. Осталось отметить практику, чтобы завершить урок.` : `Результат ${score}%. Нужно минимум ${passScore(lesson)}%. Попробуйте еще раз.`, score>=passScore(lesson)?'warning':'error');
     };
@@ -1053,26 +1116,38 @@
   async function saveProgress(lessonId, fields){
     const lesson = state.lessons.find(l=>l.id===lessonId) || {};
     const current = pFor(lessonId) || {};
-    const merged = {...current, ...fields};
+    const clientFields = {...fields};
+    delete clientFields.answers;
+    const merged = {...current, ...clientFields};
     const computedComplete = !!(merged.video_watched && merged.practice_done && Number(merged.quiz_score || 0) >= passScore(lesson));
     const completed = !!(merged.completed || current.completed || computedComplete);
-    const payload = {user_id:state.user.id, lesson_id:lessonId, ...fields, completed, completed_at:completed?(merged.completed_at || current.completed_at || new Date().toISOString()):null, updated_at:new Date().toISOString()};
+    const payload = {user_id:state.user.id, lesson_id:lessonId, ...clientFields, completed, completed_at:completed?(merged.completed_at || current.completed_at || new Date().toISOString()):null, updated_at:new Date().toISOString()};
     if(isTestMode() && state.profile?.role === 'admin'){
       const i = state.progress.findIndex(p=>p.lesson_id===lessonId && p.user_id===state.user.id);
       if(i>=0) state.progress[i] = {...state.progress[i], ...payload};
       else state.progress.push(payload);
       saveTestProgress();
-      return;
+      return state.progress.find(p=>p.lesson_id===lessonId && p.user_id===state.user.id) || payload;
     }
     if(!sb){
       const i = state.progress.findIndex(p=>p.lesson_id===lessonId && p.user_id===state.user.id);
       if(i>=0) state.progress[i] = {...state.progress[i], ...payload};
       else state.progress.push(payload);
-      return;
+      return state.progress.find(p=>p.lesson_id===lessonId && p.user_id===state.user.id) || payload;
     }
-    const { error } = await withTimeout(sb.from('lesson_progress').upsert(payload,{onConflict:'user_id,lesson_id'}), 9000, 'сохранение прогресса');
-    if(error) alert(error.message);
-    else { cacheRemove('progress', state.user.id); }
+    const {data,error}=await withTimeout(sb.rpc('save_lesson_progress',{
+      p_lesson_id:lessonId,
+      p_video_watched:fields.video_watched ?? null,
+      p_practice_done:fields.practice_done ?? null,
+      p_answers:Array.isArray(fields.answers) ? fields.answers : null
+    }),9000,'сохранение прогресса');
+    if(error){ alert('Не удалось сохранить прогресс: '+error.message); return null; }
+    cacheRemove('progress', state.user.id);
+    if(data){
+      const i=state.progress.findIndex(p=>p.lesson_id===lessonId && p.user_id===state.user.id);
+      if(i>=0) state.progress[i]=data; else state.progress.push(data);
+    }
+    return data || null;
   }
 
   async function initCabinet(){
@@ -1095,7 +1170,7 @@
   function renderPendingCabinet(){
     const root=$('#cabinetRoot'); if(!root) return;
     const blocked = approvalStatus() === 'blocked';
-    root.innerHTML = `<div class="page-title"><h1>Личный кабинет</h1><p>Здравствуйте, ${esc(state.profile?.full_name || state.user.email)}.</p></div><section class="approval-card glass panel"><div class="approval-icon">${blocked?'⛔':'⏳'}</div><h2>${blocked?'Доступ к курсу пока закрыт':'Заявка ожидает подтверждения'}</h2><p>${blocked?'Администратор пока не открыл вам доступ к урокам. Напишите в WhatsApp, если считаете, что это ошибка.':'Вы успешно зарегистрировались. Уроки откроются после подтверждения администратором.'}</p><div class="approval-status-row"><span class="status ${approvalClass()}">${esc(approvalText())}</span><span>${esc(state.profile?.email || '')}</span></div><div class="notice small">После подтверждения в этом кабинете появятся уроки, прогресс, материалы и кнопка продолжения курса.</div><div class="auth-actions"><a class="ghost-btn whatsapp-link" target="_blank" href="${whatsappUrl('Здравствуйте! Я зарегистрировался на курс и ожидаю подтверждения доступа.')}">Написать в WhatsApp</a><button class="secondary" onclick="location.reload()">Обновить статус</button></div></section>`;
+    root.innerHTML = `<div class="page-title"><h1>Личный кабинет</h1><p>Здравствуйте, ${esc(state.profile?.full_name || state.user.email)}.</p></div><section class="approval-card glass panel"><div class="approval-icon">${blocked?'⛔':'⏳'}</div><h2>${blocked?'Доступ к курсу пока закрыт':'Заявка ожидает подтверждения'}</h2><p>${blocked?'Администратор пока не открыл вам доступ к урокам. Напишите в WhatsApp, если считаете, что это ошибка.':'Вы успешно зарегистрировались. Уроки откроются после подтверждения администратором.'}</p><div class="approval-status-row"><span class="status ${approvalClass()}">${esc(approvalText())}</span><span>${esc(state.profile?.email || '')}</span></div><div class="notice small">После подтверждения в этом кабинете появятся уроки, прогресс, материалы и кнопка продолжения курса.</div><div class="auth-actions"><a class="ghost-btn whatsapp-link" target="_blank" rel="noopener" href="${whatsappUrl('Здравствуйте! Я зарегистрировался на курс и ожидаю подтверждения доступа.')}">Написать в WhatsApp</a><button class="secondary" onclick="location.reload()">Обновить статус</button></div></section>`;
     setWhatsAppLinks();
   }
   function renderCabinet(){
@@ -1105,7 +1180,7 @@
     root.innerHTML = `<div class="page-title"><h1>Личный кабинет</h1><p>Здравствуйте, ${esc(state.profile?.full_name || state.user.email)}. Здесь видно, что уже выполнено и что делать дальше.</p></div>
       <div class="metric-grid"><div class="metric"><b>${sum.percent}%</b><span>общий прогресс</span></div><div class="metric"><b>${sum.done}/${sum.total}</b><span>уроков завершено</span></div><div class="metric"><b>${sum.watched}</b><span>видео просмотрено</span></div><div class="metric"><b>${sum.practice}</b><span>заданий выполнено</span></div><div class="metric"><b>${sum.avg}%</b><span>средний тест</span></div></div>
       <section class="glass panel next-step"><h2>Ваш следующий шаг</h2>${notices.map(n=>`<div class="notice small">${esc(n)}</div>`).join('')}${sum.next?`<a class="primary" href="lesson.html?id=${sum.next.id}">Продолжить обучение</a>`:`<a class="primary" href="complete.html">Посмотреть итог курса</a>`}</section>
-      <section class="grid-2"><div class="glass panel"><h2>Уведомления</h2>${renderCabinetNotifications()}</div><div class="glass panel"><h2>Помощь</h2><p>${esc(settings().support_text)}</p><a class="ghost-btn whatsapp-link" target="_blank" href="${whatsappUrl()}">Написать в WhatsApp</a></div></section>
+      <section class="grid-2"><div class="glass panel"><h2>Уведомления</h2>${renderCabinetNotifications()}</div><div class="glass panel"><h2>Помощь</h2><p>${esc(settings().support_text)}</p><a class="ghost-btn whatsapp-link" target="_blank" rel="noopener" href="${whatsappUrl()}">Написать в WhatsApp</a></div></section>
       <section class="glass panel"><h2>Прогресс по урокам</h2><div class="lesson-list">${state.lessons.map((l,i)=>{const p=pFor(l.id)||{};return `<div class="lesson-card smart-lesson-card"><div class="lesson-num">${esc(l.icon)}</div><div><h3>${i+1}. ${esc(l.title)}</h3>${progressChecklistHtml(l)}</div>${isComplete(l)?'<span class="status done">✅ Готово</span>':isUnlocked(i)?'<span class="status open">Доступен</span>':'<span class="status lock">Закрыт</span>'}</div>`}).join('')}</div></section>`;
     setWhatsAppLinks();
   }
@@ -1120,7 +1195,7 @@
   function renderComplete(){
     const root=$('#completeRoot') || $('#certificateRoot'); if(!root) return; const sum=courseSummary();
     const done = sum.done >= sum.total && sum.total > 0;
-    root.innerHTML = `<section class="completion-card glass"><div class="completion-icon">${done?'🎉':'🚀'}</div><h1>${done?'Курс завершен!':'Продолжайте обучение'}</h1><p>${done?'Вы прошли все доступные уроки, выполнили практику и закрепили знания тестами. Теперь можно увереннее пользоваться государственными услугами по инструкции.':'Вы еще не завершили все уроки. Вернитесь к курсу и продолжите с доступного этапа.'}</p><div class="metric-grid"><div class="metric"><b>${sum.percent}%</b><span>прогресс</span></div><div class="metric"><b>${sum.done}/${sum.total}</b><span>уроков</span></div><div class="metric"><b>${sum.avg}%</b><span>средний тест</span></div></div><div class="completion-actions"><a class="primary" href="cabinet.html">Вернуться в кабинет</a><a class="secondary" href="course.html">Повторить / продолжить курс</a><a class="ghost-btn whatsapp-link" target="_blank" href="${whatsappUrl(done?'Здравствуйте! Я завершил курс.':'Здравствуйте! Мне нужна помощь с прохождением курса.')}">Написать в WhatsApp</a></div></section>`; setWhatsAppLinks();
+    root.innerHTML = `<section class="completion-card glass"><div class="completion-icon">${done?'🎉':'🚀'}</div><h1>${done?'Курс завершен!':'Продолжайте обучение'}</h1><p>${done?'Вы прошли все доступные уроки, выполнили практику и закрепили знания тестами. Теперь можно увереннее пользоваться государственными услугами по инструкции.':'Вы еще не завершили все уроки. Вернитесь к курсу и продолжите с доступного этапа.'}</p><div class="metric-grid"><div class="metric"><b>${sum.percent}%</b><span>прогресс</span></div><div class="metric"><b>${sum.done}/${sum.total}</b><span>уроков</span></div><div class="metric"><b>${sum.avg}%</b><span>средний тест</span></div></div><div class="completion-actions"><a class="primary" href="cabinet.html">Вернуться в кабинет</a><a class="secondary" href="course.html">Повторить / продолжить курс</a><a class="ghost-btn whatsapp-link" target="_blank" rel="noopener" href="${whatsappUrl(done?'Здравствуйте! Я завершил курс.':'Здравствуйте! Мне нужна помощь с прохождением курса.')}">Написать в WhatsApp</a></div></section>`; setWhatsAppLinks();
   }
   async function initProgram(){ await loadLessons(); await loadMaterials(); renderLessonPreview(); renderMaterialsPreview(); }
 
@@ -1173,7 +1248,7 @@
       const label = main.provider === 'youtube' ? 'YouTube' : main.provider === 'rutube' ? 'Rutube' : main.provider === 'vk' ? 'VK Видео' : main.type === 'file' ? 'Файл' : 'Ссылка';
       return `<div class="lesson-video-admin-status"><span class="status done">🎬 ${esc(label)}</span><span class="hint">Основное видео добавлено.</span></div>`;
     }
-    return `<div class="lesson-video-admin-status"><span class="status lock">Видео не добавлено</span><span class="hint">Можно вставить ссылки VK/YouTube/Rutube или загрузить сразу несколько MP4-файлов прямо в этот урок.</span></div>`;
+    return `<div class="lesson-video-admin-status"><span class="status lock">Видео не добавлено</span><span class="hint">Можно вставить одну или несколько ссылок VK/YouTube/Rutube, iframe-код VK или загрузить MP4.</span></div>`;
   }
 
   async function renderAdminLessons(){
@@ -1257,20 +1332,8 @@
       <label>Несколько видео в одном уроке <small>каждое видео с новой строки. Можно просто ссылку или так: Название | ссылка</small><textarea name="video_parts" id="videoPartsInput" placeholder="Введение | https://vkvideo.ru/video-123456_789012345
 Практика | https://youtu.be/xxxx
 Итог | https://rutube.ru/video/xxxx/">${esc(videoPartsToText(lesson?.video_parts))}</textarea></label>
-      <div class="notice compact-note"><b>Как лучше делать:</b> если видео большое, загрузите его в группу ВК и вставьте ссылку сюда. Если видео до 50 МБ — можно загрузить прямо с компьютера ниже. Все выбранные файлы попадут в этот же урок.</div>
-      <div class="upload-helper simplified-upload multi-upload-box">
-        <div>
-          <b>Загрузить несколько видео прямо в этот урок</b>
-          <p class="hint">Выберите сразу 2, 3, 5 или больше видеофайлов. Сайт загрузит их по очереди в Supabase и сам добавит в список «Несколько видео в одном уроке».</p>
-          <p class="hint"><b>Важно:</b> каждый отдельный файл должен быть до 50 МБ. Большие видео загружайте в VK Видео и вставляйте ссылку.</p>
-        </div>
-        <div class="upload-row">
-          <input type="file" id="lessonVideoFile" accept="video/mp4,video/webm,video/quicktime" multiple>
-          <button class="primary" type="button" id="uploadLessonVideo">Загрузить видео в этот урок</button>
-        </div>
-        <div class="hint">Можно выделить сразу несколько файлов в окне выбора: удерживайте Ctrl или просто выделите пачку видео.</div>
-        <div id="lessonUploadResult"></div>
-      </div>
+      <div class="notice compact-note"><b>Как лучше делать:</b> если видео большое, загрузите его в группу ВК и вставьте ссылку сюда. Тогда заказчик просто добавляет ссылки, а ученики смотрят все видео внутри одного урока.</div>
+      <div class="upload-helper simplified-upload"><div><b>Загрузить MP4-файлы до 50 МБ</b><p class="hint">Можно выбрать сразу несколько MP4-файлов. Они автоматически добавятся в список видео этого урока. Большие файлы лучше хранить в VK Видео, YouTube или Rutube.</p></div><div class="upload-row"><input type="file" id="lessonVideoFile" accept="video/mp4,video/webm,video/quicktime" multiple><button class="secondary" type="button" id="uploadLessonVideo">Загрузить выбранные видео</button></div><div id="lessonUploadResult"></div></div>
       <label class="small-select">Тип основного видео<select name="video_type" id="videoTypeSelect"><option value="none">Без основного видео</option><option value="file">Загруженное видео</option><option value="youtube">Встроенное видео YouTube/Rutube/VK</option><option value="external">Прямая ссылка</option></select></label>
 
       <h3>3. Материал урока</h3>
@@ -1390,11 +1453,15 @@ ${line}` : line;
       const typeSelect = $('#videoTypeSelect', root) || $('select[name="video_type"]', root);
       const partsInput = $('#videoPartsInput', root);
       if(typeSelect) typeSelect.value = 'file';
-      const existing = normalizeVideoParts(partsInput?.value || '');
-      const all = sortVideoParts(existing.concat(uploaded));
-      if(partsInput) partsInput.value = all.map((p,i)=>`${p.title || ('Видео '+String(i+1).padStart(2,'0'))} | ${p.url}`).join('\n');
-      if(urlInput && !String(urlInput.value || '').trim()) urlInput.value = '';
-      result.innerHTML = msg(`Загружено видео: ${uploaded.length}. Все выбранные файлы добавлены в этот урок. Теперь обязательно нажмите «Сохранить урок».`);
+      if(uploaded.length === 1 && urlInput && !String(partsInput?.value || '').trim()){
+        urlInput.value = uploaded[0].url;
+        result.innerHTML = msg('Видео загружено. Ссылка вставлена в урок. Теперь нажмите «Сохранить урок».') + `<input value="${esc(uploaded[0].url)}" onclick="this.select()">`;
+      } else {
+        const existing = normalizeVideoParts(partsInput?.value || '');
+        const all = sortVideoParts(existing.concat(uploaded));
+        if(partsInput) partsInput.value = all.map((p,i)=>`${p.title || ('Часть '+String(i+1).padStart(2,'0'))} | ${p.url}`).join('\n');
+        result.innerHTML = msg(`Загружено видео: ${uploaded.length}. Они добавлены в поле «Несколько видео». Теперь нажмите «Сохранить урок».`);
+      }
     } catch(err){
       console.warn(err);
       result.innerHTML = msg('Не удалось загрузить видео. Проверьте интернет и настройки Supabase Storage.', 'error');
@@ -1522,7 +1589,7 @@ ${line}` : line;
   }
   function renderMaterialsAdminList(){
     const list=$('#materialsAdminList'); if(!list) return;
-    list.innerHTML = (state.materials||[]).map(m=>{ const lesson=state.lessons.find(l=>l.id===m.lesson_id); const path=m.file_path || storagePathFromUrl(m.file_url); return `<div class="mini-item file-mini"><div><b>${materialIcon(m)} ${esc(m.title)}</b><small>${lesson?`Урок: ${esc(lesson.title)} · `:''}${m.is_published?'Опубликован':'Скрыт'}${path?` · ${esc(path)}`:''}</small><p class="hint">${esc(m.description||'')}</p></div><div class="admin-actions"><a class="secondary small" href="${esc(m.file_url||'#')}" target="_blank">Открыть</a><button class="danger small" data-delete-material="${m.id}">Удалить</button></div></div>`; }).join('') || '<div class="empty">Материалов пока нет</div>';
+    list.innerHTML = (state.materials||[]).map(m=>{ const lesson=state.lessons.find(l=>l.id===m.lesson_id); const path=m.file_path || storagePathFromUrl(m.file_url); return `<div class="mini-item file-mini"><div><b>${materialIcon(m)} ${esc(m.title)}</b><small>${lesson?`Урок: ${esc(lesson.title)} · `:''}${m.is_published?'Опубликован':'Скрыт'}${path?` · ${esc(path)}`:''}</small><p class="hint">${esc(m.description||'')}</p></div><div class="admin-actions"><a class="secondary small" href="${esc(safeExternalUrl(m.file_url,'#'))}" target="_blank" rel="noopener">Открыть</a><button class="danger small" data-delete-material="${m.id}">Удалить</button></div></div>`; }).join('') || '<div class="empty">Материалов пока нет</div>';
     $$('[data-delete-material]', list).forEach(btn=>btn.onclick=async()=>{
       const material = (state.materials||[]).find(m=>String(m.id)===String(btn.dataset.deleteMaterial));
       if(!material) return;
@@ -1656,7 +1723,8 @@ ${line}` : line;
   async function exportBackup(){
     const result=$('#backupExportResult'); result.innerHTML=msg('Готовим файл...');
     const lessonsRes=await sb.from('lessons').select('*').order('sort_order',{ascending:true});
-    const quizRes=await sb.from('quiz_questions').select('*').order('sort_order',{ascending:true});
+    let quizRes=await sb.rpc('get_admin_quiz_questions');
+    if(quizRes.error) quizRes=await sb.from('quiz_questions').select('*').order('sort_order',{ascending:true});
     const settingsRes=await sb.from('site_settings').select('*').eq('id',1).single();
     const materialsRes=await sb.from('materials').select('*').order('created_at',{ascending:false});
     const backup={version:3,exported_at:new Date().toISOString(),settings:settingsRes.data||settings(),lessons:lessonsRes.data||[],questions:quizRes.data||[],materials:materialsRes.data||[]};
@@ -1692,17 +1760,94 @@ ${line}` : line;
     const root=$('#tab-help'); if(!root) return;
     root.innerHTML = `<h2>Как пользоваться админкой</h2><div class="help-steps"><div class="help-step"><b>1</b><h3>Создайте урок</h3><p>Откройте «Уроки», нажмите «+ Новый урок». Обязательны только название, описание, видео/текст и тест.</p></div><div class="help-step"><b>2</b><h3>Загрузите видео</h3><p>В форме урока выберите файл MP4/WEBM/MOV и нажмите «Загрузить видео». Ссылка вставится автоматически.</p></div><div class="help-step"><b>3</b><h3>Добавьте тест</h3><p>Добавьте вопросы, варианты ответа и номер правильного ответа. Проходной балл задается в уроке или настройках.</p></div><div class="help-step"><b>4</b><h3>Проверьте предпросмотр</h3><p>Нажмите «Предпросмотр», чтобы увидеть, как урок будет выглядеть для ученика.</p></div><div class="help-step"><b>5</b><h3>Опубликуйте</h3><p>Включите «Опубликован» и сохраните урок. Он появится в курсе автоматически.</p></div><div class="help-step"><b>6</b><h3>Следите за учениками</h3><p>В разделе «Ученики» видно прогресс, результаты тестов и активность.</p></div></div><div class="notice"><b>Рекомендация:</b> перед большими изменениями открывайте раздел «Резерв» и скачивайте копию уроков.</div>`;
   }
+  function isImageFile(file){ return file && /^image\/(png|jpeg|jpg|webp|svg\+xml)$/i.test(file.type || ''); }
+  function rgbToHex(r,g,b){ return '#' + [r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join(''); }
+  function extractLogoBackground(file){
+    return new Promise((resolve)=>{
+      if(!file || file.type === 'image/svg+xml'){ resolve(''); return; }
+      const img = new Image();
+      img.onload = ()=>{
+        try{
+          const size = 96;
+          const canvas = document.createElement('canvas'); canvas.width=size; canvas.height=size;
+          const ctx = canvas.getContext('2d', {willReadFrequently:true});
+          ctx.clearRect(0,0,size,size); ctx.drawImage(img,0,0,size,size);
+          const data = ctx.getImageData(0,0,size,size).data;
+          let r=0,g=0,b=0,count=0;
+          const take=(x,y)=>{ const i=(y*size+x)*4; const a=data[i+3]; if(a>20){ r+=data[i]; g+=data[i+1]; b+=data[i+2]; count++; } };
+          for(let i=0;i<size;i++){
+            take(i,0); take(i,size-1); take(0,i); take(size-1,i);
+          }
+          if(count<12){
+            for(let y=0;y<size;y+=4) for(let x=0;x<size;x+=4) take(x,y);
+          }
+          URL.revokeObjectURL(img.src);
+          resolve(count ? rgbToHex(r/count,g/count,b/count) : '');
+        }catch(e){ resolve(''); }
+      };
+      img.onerror = ()=>resolve('');
+      img.src = URL.createObjectURL(file);
+    });
+  }
+  async function uploadSiteLogo(file){
+    if(!file) throw new Error('Выберите PNG, JPG, WEBP или SVG логотип.');
+    if(!isImageFile(file)) throw new Error('Логотип должен быть PNG, JPG, WEBP или SVG.');
+    if(file.size > 3*1024*1024) throw new Error('Логотип слишком большой. Лучше загрузить файл до 3 МБ.');
+    const ext = (file.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g,'') || 'png';
+    const path = `site/logo-${Date.now()}.${ext}`;
+    const { error } = await sb.storage.from('lesson-files').upload(path, file, { upsert:false, contentType:file.type || 'image/png', cacheControl:'3600' });
+    if(error) throw error;
+    const { data } = sb.storage.from('lesson-files').getPublicUrl(path);
+    return data.publicUrl;
+  }
+
   function renderAdminSettings(){
     const root=$('#tab-settings'); if(!root) return; const s=settings();
     root.innerHTML = `<h2>Настройки сайта</h2><p class="hint">Здесь можно менять внешний вид, тексты главной страницы, блоки, кнопки и WhatsApp без кода.</p><form class="form settings-form" id="settingsForm">
-      <h3>Бренд и шапка</h3><div class="form-row"><label>Иконка / логотип<input name="site_logo" value="${esc(s.site_logo)}"></label><label>Название сайта<input name="site_title" value="${esc(s.site_title)}"></label></div><label>Подзаголовок в шапке<input name="site_subtitle" value="${esc(s.site_subtitle)}"></label>
+      <h3>Бренд и шапка</h3><div class="logo-settings-box"><div class="logo-live-preview"><div class="brand-icon logo-preview ${s.site_logo_url?'has-image':''}" id="logoPreview" style="background:${esc(s.site_logo_bg || '')}">${s.site_logo_url?`<img src="${esc(s.site_logo_url)}" alt="Логотип">`:esc(s.site_logo||'✦')}</div><div><b>Предпросмотр логотипа</b><p class="hint">Загрузите PNG/JPG/WEBP/SVG. Сайт сам возьмет цвет с краев изображения и поставит его фоном, чтобы не было отличий.</p></div></div><label>Загрузить логотип PNG/JPG/WEBP/SVG<input type="file" id="siteLogoFile" accept="image/png,image/jpeg,image/webp,image/svg+xml"></label><div class="form-row"><label>Текстовая иконка, если нет картинки<input name="site_logo" value="${esc(s.site_logo)}"></label><label>Фон под логотип <small>автоматически или вручную</small><input name="site_logo_bg" type="color" value="${esc(/^#[0-9a-f]{6}$/i.test(s.site_logo_bg||'') ? s.site_logo_bg : '#0b1730')}"></label></div><input type="hidden" name="site_logo_url" value="${esc(s.site_logo_url||'')}"><div class="auth-actions"><button class="secondary" type="button" id="uploadSiteLogoBtn">Загрузить и применить логотип</button><button class="ghost-btn" type="button" id="clearSiteLogoBtn">Убрать картинку</button></div><div id="logoUploadResult"></div></div><label>Название сайта<input name="site_title" value="${esc(s.site_title)}"></label><label>Подзаголовок в шапке<input name="site_subtitle" value="${esc(s.site_subtitle)}"></label>
       <h3>Первый экран</h3><label>Плашка над заголовком<input name="hero_badge" value="${esc(s.hero_badge)}"></label><div class="form-row"><label>Заголовок до выделения<input name="hero_title" value="${esc(s.hero_title)}"></label><label>Выделенное слово<input name="hero_highlight" value="${esc(s.hero_highlight)}"></label></div><label>Текст под заголовком<textarea name="hero_text">${esc(s.hero_text)}</textarea></label><div class="form-row"><label>Текст главной кнопки<input name="primary_button_text" value="${esc(s.primary_button_text)}"></label><label>Текст второй кнопки<input name="secondary_button_text" value="${esc(s.secondary_button_text)}"></label></div>
       <h3>О курсе</h3><label>Заголовок блока<input name="about_title" value="${esc(s.about_title)}"></label><label>Описание курса<textarea name="about_text">${esc(s.about_text)}</textarea></label><label>Карточки “О курсе” <small>каждая с новой строки</small><textarea name="about_cards">${esc(joinLines(s.about_cards))}</textarea></label>
       <h3>Как проходит обучение</h3><label>Заголовок блока<input name="process_title" value="${esc(s.process_title)}"></label><label>Шаги обучения <small>каждый шаг с новой строки</small><textarea name="process_steps">${esc(joinLines(s.process_steps))}</textarea></label>
       <h3>Помощь и WhatsApp</h3><div class="form-row"><label>Заголовок помощи<input name="support_title" value="${esc(s.support_title)}"></label><label>WhatsApp без плюса<input name="whatsapp_phone" value="${esc(s.whatsapp_phone)}"></label></div><label>Текст помощи<textarea name="support_text">${esc(s.support_text)}</textarea></label>
       <h3>Обучение</h3><div class="form-row"><label>Проходной балл<input name="passing_score" type="number" min="0" max="100" value="${esc(s.passing_score)}"></label><label>Ширина сайта на ПК<input name="site_width" type="number" min="1100" max="1600" value="${esc(s.site_width)}"></label></div><h3>Цветовая тема</h3><div class="form-row"><label>Основной цвет<input name="theme_primary" type="color" value="${esc(s.theme_primary)}"></label><label>Второй цвет<input name="theme_secondary" type="color" value="${esc(s.theme_secondary)}"></label></div><label>Акцентный цвет<input name="theme_accent" type="color" value="${esc(s.theme_accent)}"></label>
       <label>Текст внизу сайта <small>можно оставить пустым</small><input name="footer_text" value="${esc(s.footer_text||'')}"></label><button class="primary">Сохранить все настройки</button><div id="settingsResult"></div></form>`;
-    $('#settingsForm').onsubmit=async(e)=>{ e.preventDefault(); const fd=new FormData(e.currentTarget); const payload={site_logo:fd.get('site_logo'),site_title:fd.get('site_title'),site_subtitle:fd.get('site_subtitle'),hero_badge:fd.get('hero_badge'),hero_title:fd.get('hero_title'),hero_highlight:fd.get('hero_highlight'),hero_text:fd.get('hero_text'),primary_button_text:fd.get('primary_button_text'),secondary_button_text:fd.get('secondary_button_text'),about_title:fd.get('about_title'),about_text:fd.get('about_text'),about_cards:arr(fd.get('about_cards')),process_title:fd.get('process_title'),process_steps:arr(fd.get('process_steps')),support_title:fd.get('support_title'),support_text:fd.get('support_text'),whatsapp_phone:fd.get('whatsapp_phone'),passing_score:Number(fd.get('passing_score')||70),theme_primary:fd.get('theme_primary'),theme_secondary:fd.get('theme_secondary'),theme_accent:fd.get('theme_accent'),site_width:Number(fd.get('site_width')||1360),footer_text:fd.get('footer_text')}; const {error}=await sb.from('site_settings').update(payload).eq('id',1); $('#settingsResult').innerHTML=error?msg(error.message,'error'):msg('Настройки сохранены. Обновите главную страницу, чтобы увидеть изменения.'); await loadSettings(); hydrateBrand(); setWhatsAppLinks(); };
+    const logoFile = $('#siteLogoFile');
+    const logoPreview = $('#logoPreview');
+    const logoBgInput = $('[name="site_logo_bg"]');
+    const logoUrlInput = $('[name="site_logo_url"]');
+    if(logoFile) logoFile.onchange=async()=>{
+      const file = logoFile.files && logoFile.files[0];
+      if(!file) return;
+      const bg = await extractLogoBackground(file);
+      if(bg && logoBgInput) logoBgInput.value = bg;
+      if(logoPreview){
+        logoPreview.classList.add('has-image');
+        logoPreview.style.background = bg || logoBgInput?.value || '';
+        logoPreview.innerHTML = `<img src="${URL.createObjectURL(file)}" alt="Предпросмотр логотипа">`;
+      }
+    };
+    const uploadLogoBtn = $('#uploadSiteLogoBtn');
+    if(uploadLogoBtn) uploadLogoBtn.onclick=async()=>{
+      const result=$('#logoUploadResult');
+      const file = logoFile?.files?.[0];
+      try{
+        uploadLogoBtn.disabled=true; uploadLogoBtn.textContent='Загружаю...';
+        const url = await uploadSiteLogo(file);
+        const autoBg = await extractLogoBackground(file);
+        if(autoBg && logoBgInput) logoBgInput.value = autoBg;
+        if(logoUrlInput) logoUrlInput.value = url;
+        if(result) result.innerHTML = msg('Логотип загружен. Теперь нажмите «Сохранить все настройки».');
+      }catch(error){ if(result) result.innerHTML = msg(`Логотип не загрузился: ${esc(error.message || error)}`, 'error'); }
+      finally{ uploadLogoBtn.disabled=false; uploadLogoBtn.textContent='Загрузить и применить логотип'; }
+    };
+    const clearLogoBtn = $('#clearSiteLogoBtn');
+    if(clearLogoBtn) clearLogoBtn.onclick=()=>{
+      if(logoUrlInput) logoUrlInput.value='';
+      if(logoFile) logoFile.value='';
+      if(logoPreview){ logoPreview.classList.remove('has-image'); logoPreview.style.background=''; logoPreview.textContent=$('[name="site_logo"]')?.value || '✦'; }
+      const result=$('#logoUploadResult'); if(result) result.innerHTML=msg('Картинка убрана. Нажмите «Сохранить все настройки».');
+    };
+    $('#settingsForm').onsubmit=async(e)=>{ e.preventDefault(); const fd=new FormData(e.currentTarget); const payload={site_logo:fd.get('site_logo'),site_logo_url:fd.get('site_logo_url'),site_logo_bg:fd.get('site_logo_bg'),site_title:fd.get('site_title'),site_subtitle:fd.get('site_subtitle'),hero_badge:fd.get('hero_badge'),hero_title:fd.get('hero_title'),hero_highlight:fd.get('hero_highlight'),hero_text:fd.get('hero_text'),primary_button_text:fd.get('primary_button_text'),secondary_button_text:fd.get('secondary_button_text'),about_title:fd.get('about_title'),about_text:fd.get('about_text'),about_cards:arr(fd.get('about_cards')),process_title:fd.get('process_title'),process_steps:arr(fd.get('process_steps')),support_title:fd.get('support_title'),support_text:fd.get('support_text'),whatsapp_phone:fd.get('whatsapp_phone'),passing_score:Number(fd.get('passing_score')||70),theme_primary:fd.get('theme_primary'),theme_secondary:fd.get('theme_secondary'),theme_accent:fd.get('theme_accent'),site_width:Number(fd.get('site_width')||1360),footer_text:fd.get('footer_text')}; const {error}=await sb.from('site_settings').update(payload).eq('id',1); $('#settingsResult').innerHTML=error?msg(error.message,'error'):msg('Настройки сохранены. Обновите главную страницу, чтобы увидеть изменения.'); await loadSettings(); hydrateBrand(); setWhatsAppLinks(); };
   }
 
   function renderBootError(err){
@@ -1710,7 +1855,16 @@ ${line}` : line;
     const root = $(map[page] || 'main.container');
     if(root) root.innerHTML = networkErrorHtml('Сайт не загрузился');
   }
+  function setupAccessibility(){
+    const main=$('main');
+    if(main && !main.id) main.id='mainContent';
+    if(main && !$('.skip-link')) document.body.insertAdjacentHTML('afterbegin','<a class="skip-link" href="#'+main.id+'">Перейти к содержанию</a>');
+    document.addEventListener('keydown',(event)=>{
+      if(event.key==='Escape') $('#authModal')?.remove();
+    });
+  }
   function boot(){
+    setupAccessibility();
     init().catch((err)=>{
       console.error(err);
       trackError('boot_failed', err, {page});
